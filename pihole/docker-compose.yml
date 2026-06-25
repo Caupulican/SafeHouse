@@ -1,0 +1,21 @@
+services:
+  pihole:
+    container_name: ${PIHOLE_CONTAINER:-pihole}
+    image: pihole/pihole:latest
+    hostname: pihole
+    # DNS is bound to the WSL2 eth0 IP (PIHOLE_BIND_IP) to dodge the 10.255.255.254:53
+    # WSL DNS-tunnel listener. The IP changes across reboots, so it is injected via .env
+    # (bootstrap/ansible/logon-task auto-fill it). Web UI is published on all interfaces.
+    ports:
+      - "${PIHOLE_BIND_IP}:53:53/tcp"
+      - "${PIHOLE_BIND_IP}:53:53/udp"
+      - "${PIHOLE_WEB_PORT:-8053}:80/tcp"
+    environment:
+      TZ: "${PIHOLE_TZ:-America/Sao_Paulo}"
+      FTLCONF_webserver_api_password: "${PIHOLE_PASSWORD:-change-me}"
+      # Answer queries arriving from any interface (Windows host + crosvm VM are on other subnets).
+      FTLCONF_dns_listeningMode: "all"
+      FTLCONF_dns_upstreams: "${PIHOLE_UPSTREAMS:-1.1.1.1;1.0.0.1}"
+    volumes:
+      - "./etc-pihole:/etc/pihole"
+    restart: unless-stopped

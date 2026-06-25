@@ -1,0 +1,26 @@
+---
+- name: Verify docker is installed
+  ansible.builtin.command: docker --version
+  register: _docker
+  changed_when: false
+  failed_when: _docker.rc != 0
+
+- name: Verify 'docker compose' plugin
+  ansible.builtin.command: docker compose version
+  register: _compose
+  changed_when: false
+  failed_when: _compose.rc != 0
+
+- name: Verify current user can reach the docker daemon
+  ansible.builtin.command: docker ps
+  register: _ps
+  changed_when: false
+  failed_when: _ps.rc != 0
+
+- name: Prereqs summary
+  ansible.builtin.debug:
+    msg: "{{ _docker.stdout }} | {{ _compose.stdout }} | docker OK as {{ ansible_user_id }}"
+
+# If docker is missing, install it first:
+#   curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER
+#   (then restart the WSL distro:  wsl.exe --shutdown)

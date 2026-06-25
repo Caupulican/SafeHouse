@@ -1,0 +1,3 @@
+---
+pihole_dir: "{{ ansible_env.HOME }}/pihole"
+pihole_container: pihole

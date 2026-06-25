@@ -1,0 +1,46 @@
+---
+- name: Ensure pihole dir exists
+  ansible.builtin.file:
+    path: "{{ pihole_dir }}"
+    state: directory
+
+- name: Deploy docker-compose.yml
+  ansible.builtin.copy:
+    src: "{{ repo_dir }}/pihole/docker-compose.yml"
+    dest: "{{ pihole_dir }}/docker-compose.yml"
+
+- name: Detect WSL eth0 IP
+  ansible.builtin.shell:
+    cmd: "hostname -I | cut -d' ' -f1"
+  register: wsl_ip
+  changed_when: false
+
+- name: Render .env from example with the detected IP
+  ansible.builtin.shell:
+    cmd: "sed 's/^PIHOLE_BIND_IP=.*/PIHOLE_BIND_IP={{ wsl_ip.stdout }}/' '{{ repo_dir }}/pihole/.env.example' > '{{ pihole_dir }}/.env'"
+  changed_when: true
+
+- name: Start Pi-hole
+  ansible.builtin.command:
+    cmd: docker compose up -d
+    chdir: "{{ pihole_dir }}"
+  changed_when: true
+
+- name: Wait until Pi-hole answers DNS
+  ansible.builtin.command: "docker exec {{ pihole_container }} dig +short github.com @127.0.0.1"
+  register: _dns
+  until: _dns.rc == 0 and (_dns.stdout | length) > 0
+  retries: 40
+  delay: 3
+  changed_when: false
+
+- name: Load blocklists + rebuild gravity
+  ansible.builtin.command: "{{ repo_dir }}/scripts/load-blocklists.sh"
+  environment:
+    PIHOLE_CONTAINER: "{{ pihole_container }}"
+  changed_when: true
+  register: _grav
+
+- name: Gravity result
+  ansible.builtin.debug:
+    msg: "{{ _grav.stdout_lines[-1] | default('gravity done') }}"

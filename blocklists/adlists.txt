@@ -1,0 +1,6 @@
+https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+https://raw.githubusercontent.com/hagezi/dns-blocklists/main/hosts/pro.txt
+https://big.oisd.nl
+https://raw.githubusercontent.com/hagezi/dns-blocklists/main/hosts/pro.plus.txt
+https://raw.githubusercontent.com/jerryn70/GoodbyeAds/master/Hosts/GoodbyeAds.txt
+https://adaway.org/hosts.txt

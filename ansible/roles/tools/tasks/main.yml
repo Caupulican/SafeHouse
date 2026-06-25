@@ -1,0 +1,9 @@
+---
+- name: Install adhunt tools into the pihole dir
+  ansible.builtin.copy:
+    src: "{{ repo_dir }}/tools/{{ item }}"
+    dest: "{{ pihole_dir }}/{{ item }}"
+    mode: "0755"
+  loop:
+    - adhunt.sh
+    - parse_cap.py

@@ -1,0 +1,34 @@
+---
+- name: Detect Windows user profile (via interop)
+  ansible.builtin.shell:
+    cmd: "wslpath \"$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\\r')\""
+  register: winprofile
+  changed_when: false
+
+- name: Ensure C:\Temp exists
+  ansible.builtin.file:
+    path: /mnt/c/Temp
+    state: directory
+
+- name: Ensure .pihole dir in the Windows profile
+  ansible.builtin.file:
+    path: "{{ winprofile.stdout }}/.pihole"
+    state: directory
+
+- name: Stage set-dns.ps1 into the Windows profile
+  ansible.builtin.copy:
+    src: "{{ repo_dir }}/windows/set-dns.ps1"
+    dest: "{{ winprofile.stdout }}/.pihole/set-dns.ps1"
+
+- name: Stage mktask.ps1 into C:\Temp
+  ansible.builtin.copy:
+    src: "{{ repo_dir }}/windows/mktask.ps1"
+    dest: /mnt/c/Temp/mktask.ps1
+
+- name: Remaining ADMIN steps (cannot self-elevate from WSL)
+  ansible.builtin.debug:
+    msg:
+      - "Pi-hole is up. Two one-time ADMIN steps remain (elevated PowerShell):"
+      - "1) Point DNS:      Set-DnsClientServerAddress -InterfaceAlias 'Ethernet' -ServerAddresses <WSL-eth0-IP>"
+      - "2) Arm logon task: powershell -ExecutionPolicy Bypass -File C:\\Temp\\mktask.ps1"
+      - "Then RESTART Google Play Games so the crosvm VM picks up Pi-hole. See windows/README.md."
