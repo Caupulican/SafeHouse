@@ -104,12 +104,16 @@ of the earlier ideas at once: Pi-hole never sees the DNS query, the SNI hunter c
 encrypted QUIC handshake, and the servers sit on shared CDNs (Google, CloudFront, Cloudflare,
 Akamai) that cannot be IP-blocked without breaking the games.
 
-So `safehouse-adblock.ps1` also adds three rules scoped to `crosvm.exe` only:
+So `safehouse-adblock.ps1` also adds rules scoped to `crosvm.exe` only:
 
 - block **UDP 443 (QUIC)**, so HTTP/3 falls back to HTTP/2 over TCP;
 - block **TCP 853 (DoT)**;
 - block **TCP 443 to the well-known public DoH resolvers** (Google, Cloudflare, Quad9, AdGuard,
-  OpenDNS).
+  OpenDNS);
+- block **IPv6 plaintext DNS (UDP and TCP 53)**. The VM was resolving many names over IPv6 to the
+  host link-local address (`fe80::1`), which skips the IPv4-only Pi-hole. Blocking IPv6 DNS forces
+  the VM back to its IPv4 resolver, which is Pi-hole. The VM already reaches Pi-hole over IPv4, so
+  DNS keeps working.
 
 With those bypass channels closed, the games fall back to **plaintext DNS through Pi-hole** (where
 the blocklist catches the ad domains) and to **TCP TLS** (where the SNI hunter can read hostnames).

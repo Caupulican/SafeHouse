@@ -224,6 +224,16 @@ if (-not $NoForceVisibility) {
     New-NetFirewallRule -DisplayName 'SafeHouse: crosvm no public DoH' -Group $Group `
       -Direction Outbound -Action Block -Profile Any -Program $crosvmPath -Protocol TCP -RemotePort 443 -RemoteAddress $dohIps | Out-Null
     Write-Host "Forced crosvm onto plaintext DNS + TCP (blocked QUIC, DoT, and public DoH for it)." -ForegroundColor Cyan
+
+    # Close the IPv6 DNS leak: the VM resolves many names over IPv6 to the host (fe80::1), which
+    # skips the IPv4-only Pi-hole. Block IPv6 plaintext DNS for crosvm so it falls back to IPv4,
+    # where Pi-hole is the resolver. The VM already reaches Pi-hole over IPv4, so DNS keeps working.
+    $v6 = @('fe80::/10','2000::/3','fc00::/7')
+    New-NetFirewallRule -DisplayName 'SafeHouse: crosvm no IPv6 DNS (UDP 53)' -Group $Group `
+      -Direction Outbound -Action Block -Profile Any -Program $crosvmPath -Protocol UDP -RemotePort 53 -RemoteAddress $v6 | Out-Null
+    New-NetFirewallRule -DisplayName 'SafeHouse: crosvm no IPv6 DNS (TCP 53)' -Group $Group `
+      -Direction Outbound -Action Block -Profile Any -Program $crosvmPath -Protocol TCP -RemotePort 53 -RemoteAddress $v6 | Out-Null
+    Write-Host "Closed the IPv6 DNS leak (forced crosvm DNS onto IPv4 -> Pi-hole)." -ForegroundColor Cyan
   } else {
     Write-Warning "crosvm.exe not found at the default path; skipped the QUIC/DoH block. Pass -NoForceVisibility to silence."
   }
