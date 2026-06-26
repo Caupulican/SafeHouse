@@ -13,6 +13,7 @@
 # --- manual entries (hand-curated, kept above the marker) --------------------
 104.36.113.0/24     PubMatic - programmatic ad exchange (AS62713)
 213.180.193.0/24    Yandex AppMetrica - mobile ad attribution / analytics
+213.180.204.0/24    Yandex - telemetry / qloud balancer seen serving the games
 115.227.15.0/24     CT-HangZhou IDC - in-game ad SDK backend (AS58461, CN)
 183.134.100.0/24    CT-HangZhou IDC - in-game ad SDK backend (AS58461, CN)
 

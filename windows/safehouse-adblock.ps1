@@ -33,7 +33,8 @@ param(
   [string]$Group       = 'SafeHouse-AdBlock',
   [string]$ProcessName = 'crosvm',
   [string]$IngestFile,
-  [switch]$RebuildOnly
+  [switch]$RebuildOnly,
+  [switch]$NoForceVisibility
 )
 
 $ErrorActionPreference = 'Stop'
@@ -203,8 +204,33 @@ Get-NetFirewallRule -Group $Group -ErrorAction SilentlyContinue | Remove-NetFire
 New-NetFirewallRule -DisplayName 'SafeHouse Ad/Tracker Block (out)' -Group $Group `
   -Direction Outbound -Action Block -Profile Any -RemoteAddress $allRanges -Protocol Any | Out-Null
 
+# --- 6b. force crosvm onto inspectable/blockable paths -----------------------
+# Ad SDKs hide from every layer by using QUIC (UDP 443) and their own encrypted DNS:
+# Pi-hole never sees the lookup, the SNI is encrypted, and the servers sit on shared CDNs that
+# cannot be IP-blocked. Block QUIC and DoH/DoT *only for crosvm*, so the games fall back to
+# plaintext DNS (which goes through Pi-hole) and to TCP TLS. Legit Google traffic falls back to
+# TCP automatically, so nothing breaks. This is scoped to crosvm.exe and does not touch the host.
+if (-not $NoForceVisibility) {
+  $crosvmPath = Get-Process -Name crosvm -ErrorAction SilentlyContinue | Select-Object -Expand Path -Unique | Select-Object -First 1
+  if (-not $crosvmPath) { $crosvmPath = 'C:\Program Files\Google\Play Games\current\emulator\crosvm.exe' }
+  if (Test-Path $crosvmPath) {
+    # well-known public DoH/DoT resolver IPs the SDKs use to bypass Pi-hole
+    $dohIps = @('8.8.8.8','8.8.4.4','1.1.1.1','1.0.0.1','9.9.9.9','149.112.112.112',
+                '94.140.14.14','94.140.15.15','208.67.222.222','208.67.220.220')
+    New-NetFirewallRule -DisplayName 'SafeHouse: crosvm no QUIC (UDP 443)' -Group $Group `
+      -Direction Outbound -Action Block -Profile Any -Program $crosvmPath -Protocol UDP -RemotePort 443 | Out-Null
+    New-NetFirewallRule -DisplayName 'SafeHouse: crosvm no DoT (853)' -Group $Group `
+      -Direction Outbound -Action Block -Profile Any -Program $crosvmPath -Protocol TCP -RemotePort 853 | Out-Null
+    New-NetFirewallRule -DisplayName 'SafeHouse: crosvm no public DoH' -Group $Group `
+      -Direction Outbound -Action Block -Profile Any -Program $crosvmPath -Protocol TCP -RemotePort 443 -RemoteAddress $dohIps | Out-Null
+    Write-Host "Forced crosvm onto plaintext DNS + TCP (blocked QUIC, DoT, and public DoH for it)." -ForegroundColor Cyan
+  } else {
+    Write-Warning "crosvm.exe not found at the default path; skipped the QUIC/DoH block. Pass -NoForceVisibility to silence."
+  }
+}
+
 Write-Host ""
-Write-Host ("Firewall group '{0}' now blocks {1} range(s)." -f $Group, $allRanges.Count) -ForegroundColor Green
+Write-Host ("Firewall group '{0}' now blocks {1} ad range(s) plus the crosvm QUIC/DoH bypass." -f $Group, $allRanges.Count) -ForegroundColor Green
 if ($newAdRanges.Count -gt 0) { Write-Host ("Added {0} new range(s) this run (see the AUTO section of {1})." -f $newAdRanges.Count, $ListPath) }
 Write-Host ""
 Write-Host "Next: fully quit Google Play Games (tray icon -> Quit) and reopen it so the games drop"

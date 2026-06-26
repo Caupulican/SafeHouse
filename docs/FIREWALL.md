@@ -96,6 +96,26 @@ The script builds a single outbound block rule in the group `SafeHouse-AdBlock`:
   removals take effect cleanly.
 - **Persistent.** Firewall rules survive reboots; no scheduled task is needed for this layer.
 
+## Forcing ads onto blockable paths (QUIC and DoH)
+
+The hardest ads do not just rotate IPs, they hide. The ad SDKs reach their servers over **QUIC
+(UDP 443)** and resolve names over **their own encrypted DNS (DoH/DoT)**. That defeats all three
+of the earlier ideas at once: Pi-hole never sees the DNS query, the SNI hunter cannot read an
+encrypted QUIC handshake, and the servers sit on shared CDNs (Google, CloudFront, Cloudflare,
+Akamai) that cannot be IP-blocked without breaking the games.
+
+So `safehouse-adblock.ps1` also adds three rules scoped to `crosvm.exe` only:
+
+- block **UDP 443 (QUIC)**, so HTTP/3 falls back to HTTP/2 over TCP;
+- block **TCP 853 (DoT)**;
+- block **TCP 443 to the well-known public DoH resolvers** (Google, Cloudflare, Quad9, AdGuard,
+  OpenDNS).
+
+With those bypass channels closed, the games fall back to **plaintext DNS through Pi-hole** (where
+the blocklist catches the ad domains) and to **TCP TLS** (where the SNI hunter can read hostnames).
+Legit Google traffic falls back to TCP on its own, so nothing breaks. The rules are scoped to
+crosvm, so the Windows host's own browsing is untouched. Pass `-NoForceVisibility` to skip them.
+
 ## Verify
 
 ```powershell
