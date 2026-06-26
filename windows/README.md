@@ -34,10 +34,22 @@ Remove:
 Unregister-ScheduledTask -TaskName PiholeGPG-DNS -Confirm:$false
 ```
 
-## 3. Restart Google Play Games
-The crosvm VM reads DNS only at launch — fully quit it (tray → Quit) and reopen so it picks up Pi-hole.
+## 3. Arm the connection-layer ad blocker (firewall)
+For ads that bypass DNS (DoH, QUIC, cached IPs), block them at the Windows Firewall. With ads
+showing in a game, run:
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\safehouse-adblock.ps1
+```
+It self-elevates, captures the crosvm VM's live connections, classifies them against
+`blocklists/ad-watchlist.txt`, logs to `logs/traffic.csv`, ingests confirmed ad IPs into
+`blocklists/ad-ip-ranges.txt`, and builds the `SafeHouse-AdBlock` firewall group. Re-run any time
+ads return. Detail: [../docs/FIREWALL.md](../docs/FIREWALL.md).
+
+## 4. Restart Google Play Games
+The crosvm VM reads DNS only at launch, so fully quit it (tray, Quit) and reopen so it picks up
+Pi-hole and drops cached ad IPs.
 
 ## Notes
-- `set-dns.ps1` assumes the adapter is named **`Ethernet`** and a router failsafe of **`192.168.1.1`** —
-  edit the two variables at the top if your machine differs.
+- `set-dns.ps1` assumes the adapter is named **`Ethernet`** and a router failsafe of **`192.168.1.1`**.
+  Edit the two variables at the top if your machine differs.
 - The task runs as the logged-on user with highest privileges (no UAC prompt at logon).

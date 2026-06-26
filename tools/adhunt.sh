@@ -26,7 +26,7 @@ Set-Content -Path \$p -Value \$s -Encoding ASCII
 Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File', \$p
 " 2>&1 | tr -d '\r'
 
-echo ">>> ${DUR}s capture running — APPROVE UAC, then TRIGGER ADS in the game <<<"
+echo ">>> ${DUR}s capture running, APPROVE UAC, then TRIGGER ADS in the game <<<"
 for i in $(seq 1 $((DUR/2 + 30))); do
   [ -f /mnt/c/Temp/adhunt_done.txt ] && { echo "capture complete"; break; }
   sleep 2

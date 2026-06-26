@@ -1,0 +1,22 @@
+# SafeHouse - connection-layer ad/tracker IP blocklist for Google Play Games (crosvm).
+#
+# These are ad and telemetry servers the crosvm VM reaches directly over HTTPS/QUIC,
+# bypassing DNS entirely (DoH / QUIC / cached IPs), so Pi-hole never sees the lookup.
+# They are blocked at the Windows Firewall (outbound). Because crosvm re-originates every
+# guest connection from the host crosvm.exe process, a host firewall rule catches them and
+# the VM cannot bypass it.
+#
+# Format: one IPv4 address or CIDR per line. Text after the IP is a note (owner / why).
+# Re-apply after edits with: windows/block-ads-firewall.ps1  (run elevated).
+# Expand this list with the SNI hunter (tools/adhunt.sh) when new leaks appear.
+
+# --- manual entries (hand-curated, kept above the marker) --------------------
+104.36.113.0/24     PubMatic - programmatic ad exchange (AS62713)
+213.180.193.0/24    Yandex AppMetrica - mobile ad attribution / analytics
+115.227.15.0/24     CT-HangZhou IDC - in-game ad SDK backend (AS58461, CN)
+183.134.100.0/24    CT-HangZhou IDC - in-game ad SDK backend (AS58461, CN)
+
+# Everything below is maintained by safehouse-adblock.ps1 (ranges it classified from live
+# traffic). Safe to leave alone; re-running the script refreshes it.
+# >>> AUTO (safehouse-adblock.ps1) - managed, do not hand-edit below >>>
+# <<< AUTO end <<<

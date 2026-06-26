@@ -1,0 +1,76 @@
+# SafeHouse ad watchlist - STABLE ad-network identities.
+#
+# This is the durable source of truth. IP addresses rotate; the network owner does not.
+# safehouse-adblock.ps1 classifies each live connection against this list, so cross-promo
+# and in-game ads keep getting caught even after their servers move to new IPs.
+#
+# Line forms:
+#   asn:<number>      match by network owner's AS number (most reliable)
+#   owner:<substring> match if the ASN owner name contains this text (case-insensitive)
+#   host:<substring>  match if the reverse-DNS / SNI hostname contains this text
+#   <bare text>       same as owner:<text>
+# Anything after # is a comment.
+#
+# Keep shared CDNs (Amazon, Fastly, Akamai, Google, Cloudflare) OUT of this file: they also
+# carry legitimate game traffic. Catch CDN-fronted ads by hostname with the SNI hunter
+# (tools/adhunt.sh) and add a host: line or a specific IP to ad-ip-ranges.txt instead.
+
+# --- whole networks that are purely ad / telemetry --------------------------
+asn:62713     PubMatic - programmatic ad exchange
+asn:58461     CT-HangZhou IDC - in-game ad SDK backend (CN)
+
+# --- ad-network owner names (Team Cymru ASN owner contains...) ---------------
+owner:pubmatic
+owner:applovin
+owner:ironsource
+owner:vungle
+owner:inmobi
+owner:mintegral
+owner:adcolony
+owner:chartboost
+owner:smaato
+owner:tapjoy
+owner:moloco
+owner:unityads
+owner:adtiming
+owner:liftoff
+owner:bidmachine
+owner:appodeal
+owner:startapp
+
+# --- ad hostnames (reverse DNS / SNI contains...) ---------------------------
+host:appmetrica
+host:applovin
+host:doubleclick
+host:googlesyndication
+host:googleadservices
+host:adcolony
+host:vungle
+host:unityads
+host:unity3d
+host:mintegral
+host:rayjump
+host:mtgglobals
+host:pangle
+host:pangleglobal
+host:byteoversea
+host:isnssdk
+host:pglstatp
+host:adsystem
+host:moatads
+host:adsrvr
+host:pubmatic
+host:rubiconproject
+host:casalemedia
+host:adnxs
+host:inmobi
+host:chartboost
+host:smaato
+host:tapjoy
+host:startappservice
+host:supersonicads
+host:ironsrc
+host:bidmachine
+host:moloco
+host:liftoff
+host:appodeal

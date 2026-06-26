@@ -1,4 +1,4 @@
-# Secrets / runtime — never commit
+# Secrets / runtime (never commit)
 pihole/.env
 .env
 
@@ -13,6 +13,13 @@ etc-pihole/
 
 # Logs
 *.log
+
+# Traffic logs (local/personal - records every server this machine contacts; never commit)
+logs/*.csv
+logs/*.db
+logs/*.sqlite
+!logs/.gitkeep
+!logs/README.md
 
 # OS cruft
 .DS_Store

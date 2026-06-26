@@ -1,9 +1,9 @@
 ---
-# SafeHouse — deploy the Pi-hole ad-block stack on this WSL2 machine.
+# SafeHouse: deploy the Pi-hole ad-block stack on this WSL2 machine.
 # Run:  ansible-playbook -i inventory.ini playbook.yml
 #
-# Linux/WSL/Pi-hole side is fully automated. The two Windows admin steps
-# (point DNS + arm the logon task) need UAC and are printed at the end.
+# Linux/WSL/Pi-hole side is fully automated. The Windows admin steps
+# (point DNS, arm the logon task, arm the firewall blocker) need UAC and are printed at the end.
 - name: SafeHouse Pi-hole stack
   hosts: local
   connection: local

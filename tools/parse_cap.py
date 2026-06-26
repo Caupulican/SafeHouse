@@ -97,7 +97,7 @@ ad = [h for h in S if isad(h)]
 for h in sorted(ad, key=lambda x: -S[x]):
     print(f"  {S[h]:4}  {h}   [{', '.join(i for i,_ in SI.get(h,{}).most_common(3))}]")
 if not ad: print("  (none)")
-print("\n=== UNKNOWN hosts (not obviously legit — scrutinize) ===")
+print("\n=== UNKNOWN hosts (not obviously legit, scrutinize) ===")
 for h, c in S.most_common():
     if not isad(h) and not isknown(h):
         print(f"  {c:4}  {h}   [{', '.join(i for i,_ in SI.get(h,{}).most_common(2))}]")
