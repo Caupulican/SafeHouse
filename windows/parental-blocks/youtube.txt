@@ -1,0 +1,18 @@
+# SafeHouse — YouTube parental block source list
+#
+# Canonical hostname list for the "YouTube" parental block toggle.
+# This is the SOURCE OF TRUTH for `parental-toggle.ps1 -Name youtube -Block`,
+# which appends a `0.0.0.0 <host>` line for each entry below to the live Windows
+# hosts file (and `-Allow` removes that section again). YouTube is ALLOWED unless
+# the block is explicitly toggled on; the script never applies it automatically.
+#
+# Format: one hostname per line. Blank lines and lines starting with '#' are ignored.
+# To block more YouTube surfaces, add hostnames here, then re-run the toggle.
+
+youtube.com
+www.youtube.com
+m.youtube.com
+youtu.be
+music.youtube.com
+youtube-nocookie.com
+www.youtube-nocookie.com

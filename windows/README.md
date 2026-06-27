@@ -49,6 +49,29 @@ ads return. Detail: [../docs/FIREWALL.md](../docs/FIREWALL.md).
 The crosvm VM reads DNS only at launch, so fully quit it (tray, Quit) and reopen so it picks up
 Pi-hole and drops cached ad IPs.
 
+## 5. Toggle the YouTube parental block (on demand)
+`parental-toggle.ps1` applies or removes a named parental block in the **live Windows hosts file**
+on demand. It is staged to `C:\SafeHouse\windows\parental-toggle.ps1` with its source host list at
+`C:\SafeHouse\windows\parental-blocks\youtube.txt`. **YouTube is allowed by default** — the block is
+only applied when you run it with `-Block`.
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\parental-toggle.ps1 -Name youtube -Block   # apply
+powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\parental-toggle.ps1 -Name youtube -Allow   # remove
+powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\parental-toggle.ps1 -Name youtube          # status
+```
+- **Self-elevates** via UAC for `-Block`/`-Allow` (status needs no elevation).
+- `-Block` appends a `# === Parental block: YouTube (toggled via parental-toggle.ps1) ===` … `# === end
+  YouTube block ===` section (one `0.0.0.0 <host>` line per host from `parental-blocks\youtube.txt`).
+  Idempotent — re-running does not duplicate it. `-Allow` removes that section. Both are byte-preserving:
+  the script splices only its own section and leaves every other line (and the file's mixed CRLF/LF
+  line endings) untouched.
+- After a change it runs `ipconfig /flushdns`; **reload the browser/app** (hard refresh) to see it.
+- The markers are compatible with `C:\Users\Public\ParentalControls\parental-undo.ps1`.
+
+**Pi-hole / network-layer alternative:** to block YouTube for the whole network instead of one machine,
+uncomment the `# --- YouTube family ---` regexes in `blocklists/parental-denylist.txt` and run
+`./scripts/load-blocklists.sh` (they ship commented-out, so nothing is blocked by default).
+
 ## Notes
 - `set-dns.ps1` assumes the adapter is named **`Ethernet`** and a router failsafe of **`192.168.1.1`**.
   Edit the two variables at the top if your machine differs.

@@ -4,3 +4,5 @@ https://big.oisd.nl
 https://raw.githubusercontent.com/hagezi/dns-blocklists/main/hosts/pro.plus.txt
 https://raw.githubusercontent.com/jerryn70/GoodbyeAds/master/Hosts/GoodbyeAds.txt
 https://adaway.org/hosts.txt
+# Parental NSFW coverage — referenced by URL only (never the domains). HaGeZi NSFW blocklist.
+https://raw.githubusercontent.com/hagezi/dns-blocklists/main/hosts/nsfw.txt

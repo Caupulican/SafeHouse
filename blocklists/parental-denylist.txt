@@ -1,0 +1,31 @@
+# Parental content layer (DNS) — Pi-hole regex, one per line.
+#
+# This file is the PARENTAL CONTENT layer, loaded into Pi-hole's domainlist as
+# type 3 (regex deny) with comment 'SafeHouse-Parental' (kept distinct from the
+# ad-network regex in regex-denylist.txt, comment 'SafeHouse').
+#
+# PUBLIC-REPO SAFE: this file lists ordinary product/service domains by NAME only.
+# Adult / NSFW content is deliberately NOT listed here — those domains are covered
+# network-wide by referencing an external NSFW blocklist URL in adlists.txt (a link,
+# never the domains themselves). Keep it that way: do not paste adult domains here.
+#
+# One regex per line catches a whole domain family incl. all subdomains. Lines
+# starting with '#' are ignored. Apply with ../scripts/load-blocklists.sh.
+
+# --- YouTube family (DISABLED — currently allowed; uncomment + run ../scripts/load-blocklists.sh to block at the Pi-hole/network layer) ---
+# These lines are commented out, so load-blocklists.sh skips them and nothing is
+# blocked by default. They mirror the hosts-layer toggle (windows/parental-toggle.ps1
+# -Name youtube). To block YouTube network-wide instead of per-machine, remove the
+# leading '# ' from each regex below and run ../scripts/load-blocklists.sh.
+# (^|\.)youtube\.com$
+# (^|\.)youtu\.be$
+# (^|\.)youtube-nocookie\.com$
+# (^|\.)googlevideo\.com$
+# (^|\.)ytimg\.com$
+
+# --- Extend here ---
+# Add more domain families below as needed, one regex per line, e.g. social media:
+#   (^|\.)tiktok\.com$
+#   (^|\.)instagram\.com$
+#   (^|\.)snapchat\.com$
+# Then run ../scripts/load-blocklists.sh to apply.

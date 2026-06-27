@@ -1,0 +1,12 @@
+# SafeHouse weekly blocklist auto-update (oneshot, triggered by the .timer).
+# Paths/user are rendered absolute by ../scripts/install-autoupdate.sh on install.
+[Unit]
+Description=SafeHouse blocklist auto-update (re-download adlists, rebuild Pi-hole gravity)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=__REPO__
+ExecStart=__AUTOUPDATE_SH__
