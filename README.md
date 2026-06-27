@@ -14,7 +14,10 @@ of which touches the inside of the VM:
 
 1. **DNS (Pi-hole).** Cheap and catches most ads. The Windows host DNS points at Pi-hole, the VM
    inherits it, and ad domains resolve to `0.0.0.0`. About 1.3M blocked domains plus regex rules
-   for named mobile-game ad networks.
+   for named mobile-game ad networks. It also carries a **parental content layer**: a regex
+   denylist (`blocklists/parental-denylist.txt`, e.g. the YouTube family) plus **adult/NSFW**
+   coverage pulled in via a referenced blocklist URL in `blocklists/adlists.txt` (a link, never
+   domain literals in this public repo). The blocklists **auto-update weekly** (see below).
 2. **Connection layer (Windows Firewall).** Some ad SDKs never ask Pi-hole: they resolve over
    their own encrypted DNS (DoH), over QUIC, or reuse a cached IP, so the DNS layer never sees
    them. crosvm re-originates every guest connection from the host `crosvm.exe` process, so a host
@@ -65,15 +68,30 @@ the firewall): see [windows/README.md](windows/README.md).
 ```
 SafeHouse/
   pihole/         docker-compose.yml (parametrised) + .env.example
-  blocklists/     adlists.txt, regex-denylist.txt (DNS layer)
+  blocklists/     adlists.txt (incl. NSFW URL), regex-denylist.txt,
+                  parental-denylist.txt (parental DNS layer)
                   ad-ip-ranges.txt, ad-watchlist.txt (firewall layer)
   tools/          adhunt.sh + parse_cap.py (silent SNI ad-server hunter)
-  windows/        safehouse-adblock.ps1 (firewall), set-dns.ps1 + mktask.ps1 (DNS persistence)
-  logs/           traffic.csv (gitignored runtime log)
-  scripts/        bootstrap.sh, load-blocklists.sh, export-config.sh
-  ansible/        playbook.yml + roles (prereqs, pihole, tools, windows_persistence)
+  windows/        safehouse-adblock.ps1 (firewall), set-dns.ps1 + mktask.ps1 (DNS persistence),
+                  parental-toggle.ps1 + parental-blocks/ (on-demand hosts-layer blocks)
+  youtube-budget/ daily YouTube watch-time budget: measure via Pi-hole, auto-block at the limit
+  automation/     safehouse-autoupdate.{service,timer,cron} +
+                  safehouse-youtube-budget.{service,cron} unit templates
+  logs/           traffic.csv, auto-update.log (gitignored runtime logs)
+  scripts/        bootstrap.sh, load-blocklists.sh, export-config.sh,
+                  auto-update.sh, install-autoupdate.sh
+  ansible/        playbook.yml + roles (prereqs, pihole, tools, automation, windows_persistence)
   docs/           ARCHITECTURE.md, RUNBOOK.md, FIREWALL.md
 ```
+
+## Auto-update
+
+The blocklists refresh on a **weekly schedule** (default Sunday 04:00 local). `scripts/auto-update.sh`
+re-applies the repo lists and rebuilds gravity so every adlist (ads + NSFW) re-downloads;
+`scripts/install-autoupdate.sh` installs it as a **systemd timer** (cron fallback) and the Ansible
+`automation` role wires it in during provisioning. Run it by hand any time with
+`./scripts/auto-update.sh` (log in `logs/auto-update.log`). See
+[docs/RUNBOOK.md](docs/RUNBOOK.md) for verify / change-cadence / uninstall.
 
 ## Day-to-day
 
@@ -81,6 +99,9 @@ SafeHouse/
 - Hunt a CDN-fronted ad by hostname: `bash tools/adhunt.sh` (trigger ads during the capture)
 - Add what you find to `blocklists/` and re-run the blocker or `./scripts/load-blocklists.sh`
 - Back up live changes into the repo: `./scripts/export-config.sh` then commit
+- Limit YouTube watch time: arm `youtube-budget/` and drive it with
+  `sudo ./youtube-budget/youtube-budget-ctl.sh status` (measures via Pi-hole, auto-blocks
+  at the daily limit, browser/app-agnostic — see [youtube-budget/README.md](youtube-budget/README.md))
 - Dashboard: http://localhost:8053/admin
 
 See [docs/RUNBOOK.md](docs/RUNBOOK.md) for operations and troubleshooting.

@@ -1,0 +1,7 @@
+# SafeHouse YouTube budget daemon — cron/nohup fallback (used when systemd is absent).
+# Rendered to /etc/cron.d/safehouse-youtube-budget by ../youtube-budget/install.sh.
+# The daemon is a self-looping process, so cron only needs to (re)launch it at boot;
+# install.sh also nohup-starts it immediately so you don't have to reboot. Unlike the
+# systemd unit there is no crash auto-restart here — check the log if enforcement stops.
+# m h dom mon dow user command
+@reboot root __DAEMON_SH__ >> __REPO__/logs/youtube-budget.log 2>&1
