@@ -57,37 +57,49 @@ Append the URL to `blocklists/adlists.txt`, then `./scripts/load-blocklists.sh`.
   docker exec pihole dig +short youtube.com @127.0.0.1   # -> 0.0.0.0 (blocked)
   ```
 
-## YouTube daily watch-time budget (measure + auto-block)
-An AdAway-style, browser-agnostic daily limiter that lives entirely on the Pi-hole/WSL
-side (`youtube-budget/`). A daemon reads Pi-hole's FTL query log to *measure* how long
-YouTube is actually watched, bills it against a daily budget, and once the budget is spent
-splices the **same** YouTube hosts block the manual toggle uses
-(`windows/parental-blocks/youtube.txt`) into the live Windows hosts file (byte-preserving,
-then flushes DNS). It resets and unblocks at the local-date rollover. Full detail in
-[../youtube-budget/README.md](../youtube-budget/README.md).
-- **Arm (ENABLES live enforcement):** `sudo ./youtube-budget/install.sh` — installs a
-  systemd service (`safehouse-youtube-budget.service`, `Restart=always`); cron `@reboot`
-  + nohup fallback when systemd is absent. Ships **disarmed** — nothing blocks until armed.
-- **Parent CLI** (run with `sudo` on the WSL host):
-  ```bash
-  sudo ./youtube-budget/youtube-budget-ctl.sh status        # used / remaining / limit / blocked today
-  sudo ./youtube-budget/youtube-budget-ctl.sh set-limit 90  # change the daily limit (today + config.env)
-  sudo ./youtube-budget/youtube-budget-ctl.sh grant 30      # +30 min today (unblocks if it frees budget)
-  sudo ./youtube-budget/youtube-budget-ctl.sh block         # force-block now
-  sudo ./youtube-budget/youtube-budget-ctl.sh allow         # override-unblock now
-  sudo ./youtube-budget/youtube-budget-ctl.sh reset         # zero today's usage + unblock
+## YouTube daily watch-time budget (Windows-native: measure + auto-block)
+A browser-agnostic daily limiter that runs **entirely on Windows** (PowerShell + Task
+Scheduler) and does **not** depend on WSL/Pi-hole/Docker being up
+(`windows/youtube-budget/`). A SYSTEM Scheduled Task (`SafeHouse-YouTubeBudget`,
+`Restart=always`) loops every ~20 s: it polls the **Windows DNS Client cache** to *measure*
+how long YouTube is actually watched (works because browser DoH is forced off by machine
+policy), bills it against a daily budget, and once the budget is spent splices the **same**
+YouTube hosts block the manual toggle uses (`windows/parental-blocks/youtube.txt`) into the
+live Windows hosts file (byte-preserving, then `ipconfig /flushdns`). A **date-based** reset
+(not a midnight timer) zeroes usage and lifts the block on the first tick of any new local
+day — correct even if the PC was off at midnight or off for days. Full detail in
+[../windows/youtube-budget/README.md](../windows/youtube-budget/README.md).
+- **Arm (ENABLES live enforcement, elevated PowerShell — self-elevates):**
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\youtube-budget\install-task.ps1
   ```
-- **Tune:** `youtube-budget/config.env` — `DAILY_LIMIT_MIN`, `SAMPLE_SEC`, `WINDOW_SEC`
-  (must exceed FTL's ~30–60 s DB-flush lag; default 240 s), `TZ_RESET`.
-- **Log:** `logs/youtube-budget.log` (gitignored). With systemd also
-  `journalctl -u safehouse-youtube-budget.service`.
-- **Caveats:** watch time is *approximate* (DNS activity, not playback); blocking YouTube
-  also blocks **YouTube Music** (`music.youtube.com` is in the shared block list). See the
-  feature README for details.
-- **Disarm:** `sudo systemctl disable --now safehouse-youtube-budget.service && sudo rm
-  /etc/systemd/system/safehouse-youtube-budget.service && sudo systemctl daemon-reload`
-  (cron fallback: `sudo rm /etc/cron.d/safehouse-youtube-budget && sudo pkill -f
-  youtube-budget.sh`). If a block is applied, lift it with `... youtube-budget-ctl.sh allow`.
+  Creates `C:\ProgramData\SafeHouse` (ACL: SYSTEM+Administrators full, **Users read-only**),
+  seeds `config.json`, registers the **AtStartup** SYSTEM task, and starts it now. Ships
+  **disarmed** — nothing blocks until you run this.
+- **Parent CLI** (`youtube-budget-ctl.ps1`; mutating verbs self-elevate via UAC, `status` is
+  read-only):
+  ```powershell
+  $ctl = 'C:\SafeHouse\windows\youtube-budget\youtube-budget-ctl.ps1'
+  powershell -ExecutionPolicy Bypass -File $ctl status         # used / remaining / limit / blocked today
+  powershell -ExecutionPolicy Bypass -File $ctl set-limit 90   # change the daily limit (today + config.json)
+  powershell -ExecutionPolicy Bypass -File $ctl grant 30       # +30 min today (unblocks if it frees budget)
+  powershell -ExecutionPolicy Bypass -File $ctl block          # force-block now
+  powershell -ExecutionPolicy Bypass -File $ctl allow          # override-unblock now
+  powershell -ExecutionPolicy Bypass -File $ctl reset          # zero today's usage + unblock
+  ```
+- **Tune:** `C:\ProgramData\SafeHouse\config.json` — `limit_min` (60), `sample_sec` (20),
+  `window_sec` (240, the sliding "is-active" window that bridges sparse DNS lookups).
+  `limit_min`/`bonus` apply live; changing sample/window needs the task restarted.
+- **State + log:** `C:\ProgramData\SafeHouse\youtube-budget.json` and `…\youtube-budget.log`
+  (`Get-ScheduledTask -TaskName SafeHouse-YouTubeBudget` to verify the task).
+- **Caveats:** watch time is *approximate* (DNS activity, not playback); only lookups that go
+  through the Windows resolver are seen; blocking YouTube also blocks **YouTube Music**
+  (`music.youtube.com` is in the shared block list). See the feature README.
+- **Disarm:** `Stop-ScheduledTask -TaskName SafeHouse-YouTubeBudget` (pause) or
+  `Unregister-ScheduledTask -TaskName SafeHouse-YouTubeBudget -Confirm:$false` (remove); then
+  lift any active block with `… youtube-budget-ctl.ps1 allow`.
+- **Migration from the old WSL daemon:** arm the Windows task above, then retire the daemon
+  on the WSL host: `sudo systemctl disable --now safehouse-youtube-budget.service`.
 
 ## Blocklists auto-update (weekly)
 `scripts/auto-update.sh` re-applies the repo blocklists and rebuilds gravity so every adlist's

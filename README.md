@@ -73,10 +73,9 @@ SafeHouse/
                   ad-ip-ranges.txt, ad-watchlist.txt (firewall layer)
   tools/          adhunt.sh + parse_cap.py (silent SNI ad-server hunter)
   windows/        safehouse-adblock.ps1 (firewall), set-dns.ps1 + mktask.ps1 (DNS persistence),
-                  parental-toggle.ps1 + parental-blocks/ (on-demand hosts-layer blocks)
-  youtube-budget/ daily YouTube watch-time budget: measure via Pi-hole, auto-block at the limit
-  automation/     safehouse-autoupdate.{service,timer,cron} +
-                  safehouse-youtube-budget.{service,cron} unit templates
+                  parental-toggle.ps1 + parental-blocks/ (on-demand hosts-layer blocks),
+                  youtube-budget/ (Windows-native daily YouTube watch-time budget + auto-block)
+  automation/     safehouse-autoupdate.{service,timer,cron} unit templates
   logs/           traffic.csv, auto-update.log (gitignored runtime logs)
   scripts/        bootstrap.sh, load-blocklists.sh, export-config.sh,
                   auto-update.sh, install-autoupdate.sh
@@ -99,9 +98,11 @@ re-applies the repo lists and rebuilds gravity so every adlist (ads + NSFW) re-d
 - Hunt a CDN-fronted ad by hostname: `bash tools/adhunt.sh` (trigger ads during the capture)
 - Add what you find to `blocklists/` and re-run the blocker or `./scripts/load-blocklists.sh`
 - Back up live changes into the repo: `./scripts/export-config.sh` then commit
-- Limit YouTube watch time: arm `youtube-budget/` and drive it with
-  `sudo ./youtube-budget/youtube-budget-ctl.sh status` (measures via Pi-hole, auto-blocks
-  at the daily limit, browser/app-agnostic — see [youtube-budget/README.md](youtube-budget/README.md))
+- Limit YouTube watch time: arm the Windows-native budget with
+  `C:\SafeHouse\windows\youtube-budget\install-task.ps1` (elevated) and drive it with
+  `…\youtube-budget-ctl.ps1 status` (measures via the Windows DNS cache, auto-blocks at the
+  daily limit, browser/app-agnostic, no WSL dependency — see
+  [windows/youtube-budget/README.md](windows/youtube-budget/README.md))
 - Dashboard: http://localhost:8053/admin
 
 See [docs/RUNBOOK.md](docs/RUNBOOK.md) for operations and troubleshooting.

@@ -72,6 +72,33 @@ powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\parental-toggle.ps
 uncomment the `# --- YouTube family ---` regexes in `blocklists/parental-denylist.txt` and run
 `./scripts/load-blocklists.sh` (they ship commented-out, so nothing is blocked by default).
 
+## 6. Arm the YouTube daily watch-time budget (auto, Windows-native)
+A fully automatic daily watch-time limiter for YouTube that runs as a **SYSTEM Scheduled
+Task** (no WSL/Pi-hole dependency). It measures watching via the Windows DNS cache, and once
+the daily budget is spent it auto-applies the same hosts block as §5; a date-based reset lifts
+it on the next day (correct even across shutdowns / days powered off). Staged to
+`C:\SafeHouse\windows\youtube-budget\`. **YouTube is allowed by default** — nothing blocks
+until you arm it. Run in an **elevated PowerShell** (it self-elevates via UAC):
+```powershell
+# ARM — registers SafeHouse-YouTubeBudget (AtStartup, SYSTEM, Restart=always) and starts it now:
+powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\youtube-budget\install-task.ps1
+```
+It creates `C:\ProgramData\SafeHouse` with a locked-down ACL (SYSTEM + Administrators full,
+**Users read-only**, so a standard user can read but not reset the budget), seeds `config.json`
+(limit 60 min / sample 20 s / window 240 s), and registers the task.
+```powershell
+$ctl = 'C:\SafeHouse\windows\youtube-budget\youtube-budget-ctl.ps1'
+powershell -ExecutionPolicy Bypass -File $ctl status        # used / remaining / limit / blocked today
+powershell -ExecutionPolicy Bypass -File $ctl set-limit 90  # change the daily limit
+powershell -ExecutionPolicy Bypass -File $ctl grant 30      # +30 min today
+powershell -ExecutionPolicy Bypass -File $ctl allow         # lift a block now (override)
+Get-ScheduledTask -TaskName SafeHouse-YouTubeBudget         # verify
+Unregister-ScheduledTask -TaskName SafeHouse-YouTubeBudget -Confirm:$false   # disarm
+```
+**Migration** from the old WSL daemon: after arming the task above, retire the daemon on the
+WSL host — `sudo systemctl disable --now safehouse-youtube-budget.service`. Full detail:
+[youtube-budget/README.md](youtube-budget/README.md).
+
 ## Notes
 - `set-dns.ps1` assumes the adapter is named **`Ethernet`** and a router failsafe of **`192.168.1.1`**.
   Edit the two variables at the top if your machine differs.

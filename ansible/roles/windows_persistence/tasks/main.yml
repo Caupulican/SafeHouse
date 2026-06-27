@@ -32,6 +32,7 @@
   loop:
     - /mnt/c/SafeHouse/windows
     - /mnt/c/SafeHouse/windows/parental-blocks
+    - /mnt/c/SafeHouse/windows/youtube-budget
     - /mnt/c/SafeHouse/blocklists
     - /mnt/c/SafeHouse/logs
 
@@ -46,6 +47,16 @@
     - { src: "{{ repo_dir }}/blocklists/ad-ip-ranges.txt",   dest: /mnt/c/SafeHouse/blocklists/ad-ip-ranges.txt }
     - { src: "{{ repo_dir }}/blocklists/ad-watchlist.txt",   dest: /mnt/c/SafeHouse/blocklists/ad-watchlist.txt }
 
+# YouTube daily watch-time budget (Windows-native). The relative
+# ..\parental-blocks\youtube.txt path stays resolvable under the staged layout.
+- name: Deploy the YouTube watch-time budget toolkit to C:\SafeHouse
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/mnt/c/SafeHouse/windows/youtube-budget/{{ item | basename }}"
+  with_fileglob:
+    - "{{ repo_dir }}/windows/youtube-budget/*.ps1"
+    - "{{ repo_dir }}/windows/youtube-budget/config.json"
+
 - name: Remaining ADMIN steps (cannot self-elevate from WSL)
   ansible.builtin.debug:
     msg:
@@ -53,4 +64,5 @@
       - "1) Point DNS:      Set-DnsClientServerAddress -InterfaceAlias 'Ethernet' -ServerAddresses <WSL-eth0-IP>"
       - "2) Arm logon task: powershell -ExecutionPolicy Bypass -File C:\\Temp\\mktask.ps1"
       - "3) Arm firewall:   powershell -ExecutionPolicy Bypass -File C:\\SafeHouse\\windows\\safehouse-adblock.ps1  (with ads showing)"
+      - "4) (Optional) Arm YouTube budget: powershell -ExecutionPolicy Bypass -File C:\\SafeHouse\\windows\\youtube-budget\\install-task.ps1  (ARMS enforcement)"
       - "Then RESTART Google Play Games so the crosvm VM picks up Pi-hole. See windows/README.md."
