@@ -1,0 +1,11 @@
+# SafeHouse weekly schedule: Sunday 04:00 local. Change the cadence by editing OnCalendar
+# (see `man systemd.time`), then: sudo systemctl daemon-reload && sudo systemctl restart safehouse-autoupdate.timer
+[Unit]
+Description=SafeHouse weekly blocklist auto-update timer (Sun 04:00 local)
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

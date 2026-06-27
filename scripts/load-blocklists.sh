@@ -24,7 +24,15 @@ while IFS= read -r rx; do
   sql "INSERT OR IGNORE INTO domainlist (type,domain,enabled,comment) VALUES (3,'$esc',1,'SafeHouse');"
 done < "$REPO/blocklists/regex-denylist.txt"
 
+echo "[*] Loading parental denylist..."
+while IFS= read -r rx; do
+  [ -z "$rx" ] && continue
+  case "$rx" in \#*) continue ;; esac
+  esc="${rx//\'/\'\'}"
+  sql "INSERT OR IGNORE INTO domainlist (type,domain,enabled,comment) VALUES (3,'$esc',1,'SafeHouse-Parental');"
+done < "$REPO/blocklists/parental-denylist.txt"
+
 echo "[*] Rebuilding gravity (downloads lists, ~1-3 min)..."
 docker exec "$CONTAINER" pihole -g
 
-echo "[✓] adlists=$(sql 'select count(*) from adlist;') regex=$(sql 'select count(*) from domainlist where type=3;')"
+echo "[✓] adlists=$(sql 'select count(*) from adlist;') regex=$(sql 'select count(*) from domainlist where type=3;') parental=$(sql "select count(*) from domainlist where type=3 and comment='SafeHouse-Parental';")"

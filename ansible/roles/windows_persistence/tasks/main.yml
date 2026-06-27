@@ -31,6 +31,7 @@
     state: directory
   loop:
     - /mnt/c/SafeHouse/windows
+    - /mnt/c/SafeHouse/windows/parental-blocks
     - /mnt/c/SafeHouse/blocklists
     - /mnt/c/SafeHouse/logs
 
@@ -40,6 +41,8 @@
     dest: "{{ item.dest }}"
   loop:
     - { src: "{{ repo_dir }}/windows/safehouse-adblock.ps1", dest: /mnt/c/SafeHouse/windows/safehouse-adblock.ps1 }
+    - { src: "{{ repo_dir }}/windows/parental-toggle.ps1",   dest: /mnt/c/SafeHouse/windows/parental-toggle.ps1 }
+    - { src: "{{ repo_dir }}/windows/parental-blocks/youtube.txt", dest: /mnt/c/SafeHouse/windows/parental-blocks/youtube.txt }
     - { src: "{{ repo_dir }}/blocklists/ad-ip-ranges.txt",   dest: /mnt/c/SafeHouse/blocklists/ad-ip-ranges.txt }
     - { src: "{{ repo_dir }}/blocklists/ad-watchlist.txt",   dest: /mnt/c/SafeHouse/blocklists/ad-watchlist.txt }
 

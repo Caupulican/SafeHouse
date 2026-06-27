@@ -1,0 +1,5 @@
+# SafeHouse weekly blocklist auto-update — cron fallback (used when systemd is unavailable).
+# Rendered to /etc/cron.d/safehouse-autoupdate by ../scripts/install-autoupdate.sh.
+# Cadence: Sunday 04:00 local. Change it by editing the schedule fields below.
+# m h dom mon dow user command
+0 4 * * 0 __USER__ __AUTOUPDATE_SH__ >> __REPO__/logs/auto-update.log 2>&1

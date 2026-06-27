@@ -6,13 +6,24 @@ the last two feed the **Windows Firewall** (connection layer, for ads that bypas
 ## `adlists.txt`
 One blocklist URL per line (loaded into Pi-hole's gravity `adlist` table). Current set:
 StevenBlack, HaGeZi Multi PRO, OISD Big, HaGeZi Pro++, GoodbyeAds, AdAway, chosen for strong
-**mobile / in-app / game-ad** coverage. Lines starting with `#` are ignored.
+**mobile / in-app / game-ad** coverage. It also references the **HaGeZi NSFW** list, which is the
+**parental adult/NSFW coverage** for the whole network — see the parental layer below. Lines
+starting with `#` are ignored.
 
 ## `regex-denylist.txt`
-One Pi-hole **regex** per line (loaded as `domainlist` type 3 = regex deny). These target named
-mobile-game ad networks & trackers by whole domain, e.g. `(^|\.)applovin\.com$`. They catch ad
-subdomains the public lists miss (this is what we discovered with `adhunt`). Lines starting with
-`#` are ignored.
+One Pi-hole **regex** per line (loaded as `domainlist` type 3 = regex deny, comment `SafeHouse`).
+These target named mobile-game ad networks & trackers by whole domain, e.g. `(^|\.)applovin\.com$`.
+They catch ad subdomains the public lists miss (this is what we discovered with `adhunt`). Lines
+starting with `#` are ignored.
+
+## `parental-denylist.txt` (parental content layer)
+One Pi-hole **regex** per line, loaded as `domainlist` type 3 = regex deny with the **distinct**
+comment `SafeHouse-Parental` so it stays separate from the ad regex above. This is the **parental
+content layer**: ordinary product/service domains blocked by name, e.g. the **YouTube** family
+(`(^|\.)youtube\.com$`, `googlevideo\.com`, `ytimg\.com`, …). It is **public-repo safe** — names
+only. Adult / NSFW content is **deliberately not listed here**; it is covered network-wide by the
+HaGeZi NSFW **URL** in `adlists.txt` (a link, never the domains). Extend it with more domain
+families (e.g. social media) as commented in the file, then `../scripts/load-blocklists.sh`.
 
 ## `ad-watchlist.txt` (firewall layer)
 Stable ad-network identities for the connection-layer blocker (`../windows/safehouse-adblock.ps1`).
@@ -33,4 +44,6 @@ Re-run that script (elevated) to refresh it. See [../docs/FIREWALL.md](../docs/F
 
 ## Backing up live changes
 If you add rules via the Pi-hole dashboard, pull them back into these files with
-`../scripts/export-config.sh`, then commit. That keeps the repo authoritative.
+`../scripts/export-config.sh`, then commit. That keeps the repo authoritative. The export splits
+type-3 regex by comment: `SafeHouse-Parental` rules round-trip to `parental-denylist.txt` (header
+preserved), everything else to `regex-denylist.txt`.

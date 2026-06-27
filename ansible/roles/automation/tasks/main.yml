@@ -1,0 +1,16 @@
+---
+# Install the weekly blocklist auto-update schedule on the Pi-hole host.
+# The installer prefers a systemd timer and falls back to a cron drop-in; it needs root
+# (become) to write under /etc, and runs the job as the connecting user so it keeps
+# docker-group access and repo ownership.
+- name: Install the weekly auto-update schedule (systemd timer, cron fallback)
+  ansible.builtin.command: "{{ repo_dir }}/scripts/install-autoupdate.sh"
+  become: true
+  environment:
+    SAFEHOUSE_RUN_USER: "{{ ansible_user_id }}"
+  changed_when: true
+  register: _autoupdate
+
+- name: Auto-update schedule result
+  ansible.builtin.debug:
+    msg: "{{ _autoupdate.stdout_lines | default(['auto-update schedule installed']) }}"
