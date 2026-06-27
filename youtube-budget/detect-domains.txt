@@ -1,0 +1,24 @@
+# SafeHouse — YouTube watch-time DETECTION domains
+#
+# These hostnames identify ACTIVE YouTube streaming/watching. The budget daemon
+# (youtube-budget.sh) counts an "active" sample whenever Pi-hole has *allowed*
+# (status 2=forwarded or 3=cached) a query for any of these in the sliding
+# WINDOW_SEC. They are matched as DNS suffixes: each entry E matches both the
+# exact host `E` and any subdomain `*.E` (SQL: domain=E OR domain LIKE '%.E').
+#
+# This is the DETECTION list (what watching looks like on the wire). It is NOT
+# the same as the ENFORCEMENT list — the hosts actually 0.0.0.0'd when the budget
+# runs out come from ../windows/parental-blocks/youtube.txt. Keep these two files
+# conceptually in sync: if you add YouTube surfaces to the block list, make sure
+# the matching content/CDN domains are detectable here, and vice-versa.
+#
+# Format: one suffix per line. Blank lines and lines starting with '#' are ignored;
+# a trailing '# comment' on a line is also stripped.
+
+googlevideo.com          # the actual video stream CDN — the strongest "is watching" signal
+youtube.com              # site + API surface
+youtubei.googleapis.com  # InnerTube API (playback/next/player calls)
+ytimg.com                # thumbnails / static (i.ytimg.com etc. covered by the suffix)
+youtu.be                 # short links
+i.ytimg.com              # thumbnail host (explicit; also covered by ytimg.com suffix)
+yt3.ggpht.com            # channel avatars / images
