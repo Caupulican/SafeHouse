@@ -1,0 +1,5 @@
+{
+  "limit_min": 60,
+  "sample_sec": 20,
+  "window_sec": 240
+}

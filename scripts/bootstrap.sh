@@ -35,12 +35,14 @@ mkdir -p /mnt/c/Temp 2>/dev/null || true
 cp "$REPO/windows/mktask.ps1" /mnt/c/Temp/mktask.ps1 2>/dev/null || true
 
 # Deploy the connection-layer ad blocker toolkit to a Windows-native working folder.
-mkdir -p /mnt/c/SafeHouse/windows /mnt/c/SafeHouse/windows/parental-blocks /mnt/c/SafeHouse/blocklists /mnt/c/SafeHouse/logs 2>/dev/null || true
+mkdir -p /mnt/c/SafeHouse/windows /mnt/c/SafeHouse/windows/parental-blocks /mnt/c/SafeHouse/windows/youtube-budget /mnt/c/SafeHouse/blocklists /mnt/c/SafeHouse/logs 2>/dev/null || true
 cp "$REPO/windows/safehouse-adblock.ps1" /mnt/c/SafeHouse/windows/ 2>/dev/null || true
 cp "$REPO/windows/parental-toggle.ps1" /mnt/c/SafeHouse/windows/ 2>/dev/null || true
 cp "$REPO/windows/parental-blocks/youtube.txt" /mnt/c/SafeHouse/windows/parental-blocks/ 2>/dev/null || true
+# YouTube daily watch-time budget (Windows-native): keep the relative ..\parental-blocks\youtube.txt resolvable after staging.
+cp "$REPO"/windows/youtube-budget/*.ps1 "$REPO"/windows/youtube-budget/config.json /mnt/c/SafeHouse/windows/youtube-budget/ 2>/dev/null || true
 cp "$REPO/blocklists/ad-ip-ranges.txt" "$REPO/blocklists/ad-watchlist.txt" /mnt/c/SafeHouse/blocklists/ 2>/dev/null || true
-echo "    safehouse-adblock.ps1 + parental-toggle.ps1 + parental-blocks/youtube.txt + ad-ip-ranges.txt + ad-watchlist.txt -> C:\\SafeHouse\\"
+echo "    safehouse-adblock.ps1 + parental-toggle.ps1 + parental-blocks/youtube.txt + youtube-budget/ + ad-ip-ranges.txt + ad-watchlist.txt -> C:\\SafeHouse\\"
 WINPROFILE="$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')" 2>/dev/null || true)"
 if [ -n "${WINPROFILE:-}" ] && [ -d "$WINPROFILE" ]; then
   mkdir -p "$WINPROFILE/.pihole"
@@ -60,4 +62,6 @@ NEXT: one-time admin steps (see windows/README.md):
   3) Arm the connection-layer ad blocker (elevated PowerShell, with ads showing):
        powershell -ExecutionPolicy Bypass -File C:\\SafeHouse\\windows\\safehouse-adblock.ps1
   4) RESTART Google Play Games so the crosvm VM picks up Pi-hole.
+  5) (Optional) Arm the YouTube daily watch-time budget (elevated PowerShell — ARMS enforcement):
+       powershell -ExecutionPolicy Bypass -File C:\\SafeHouse\\windows\\youtube-budget\\install-task.ps1
 EOF
