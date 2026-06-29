@@ -1,5 +1,7 @@
 {
   "limit_min": 60,
   "sample_sec": 20,
-  "window_sec": 240
+  "window_sec": 240,
+  "min_throughput_kbps": 64,
+  "dns_gate_min": 20
 }
