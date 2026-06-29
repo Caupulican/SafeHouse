@@ -13,12 +13,15 @@ it does, in order:
      was off at midnight, or was off for several days. Running it twice in one day
      is a no-op.
 
-  2. DETECT - pure Windows, no WSL/Pi-hole. Poll the Windows DNS Client cache for
-     live (non-blocked) resolutions of YouTube content domains (googlevideo.com,
-     youtube.com, youtubei.googleapis.com, ytimg.com, youtu.be, yt3.ggpht.com).
-     A "fresh" signal (a new cached content host, or one whose TTL bumped up =
-     re-resolved) marks watching; a sliding WINDOW_SEC bridges the gaps between a
-     video's sparse lookups and stops counting ~WINDOW_SEC after watching ends.
+  2. DETECT - pure Windows, no WSL/Pi-hole. METER the inbound bytes to Google's
+     serving IP ranges with a lightweight pktmon counters-only session (this survives
+     DNS caching / QUIC connection-coalescing, which made cache-polling blind to
+     modern YouTube), and GATE that on a recent real-time YouTube-family DNS lookup
+     (Microsoft-Windows-DNS-Client ETW). A sample is "fresh" watching when the
+     inbound throughput to Google exceeds MIN_THROUGHPUT_KBPS *and* a YouTube-family
+     name resolved within DNS_GATE_MIN minutes. A sliding WINDOW_SEC keeps counting
+     through brief dips between video segments and stops ~WINDOW_SEC after streaming
+     ends.
 
   3. ACCOUNT - if active and not already blocked, add sample_sec to seconds_used.
 
@@ -26,9 +29,9 @@ it does, in order:
      seconds_used >= limit and not blocked, splice the YouTube hosts block in
      (shared list ..\parental-blocks\youtube.txt), set blocked_by_budget, flush DNS.
 
-Resilient: a transient error in a tick is logged and the loop continues; a failed
-DNS-cache query skips the sample (no phantom accounting). State + log live under
-C:\ProgramData\SafeHouse (see common.ps1).
+Resilient: a transient error in a tick is logged and the loop continues; an
+unreadable pktmon session is re-armed and the sample skipped (no phantom
+accounting). State + log live under C:\ProgramData\SafeHouse (see common.ps1).
 
 Run modes:
   .\youtube-budget.ps1            # the supervised loop (what the task runs)
@@ -47,11 +50,17 @@ $cfg        = Get-YbConfig
 $SampleSec  = [int]$cfg.sample_sec
 $WindowSec  = [int]$cfg.window_sec
 $DefLimit   = [int]$cfg.limit_min
+$MinKbps    = [int]$cfg.min_throughput_kbps
+$DnsGateMin = [int]$cfg.dns_gate_min
 $HostsPath  = Get-YbHostsPath
 
 # In-memory detection state (a persistent loop, so no need to persist these).
-$script:PrevSig         = @{}   # entry-name -> remaining TTL last seen
-$script:LastActiveEpoch = 0     # unix seconds of the last "fresh" YouTube signal
+$script:GoogRanges      = $null      # cached list of Google CIDRs we meter
+$script:PrevBytes       = $null      # last cumulative inbound-bytes reading (for the delta)
+$script:LastActiveEpoch = 0          # unix seconds of the last "fresh" watching sample
+$script:LastDnsEpoch    = 0          # unix seconds of the last YouTube-family DNS lookup
+$script:LastDnsCheck    = Get-Date   # high-water mark for the DNS-gate event query
+$script:LastIdleLog     = 0          # rate-limit for the [idle] diagnostic line
 
 function Get-NowEpoch { [int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
 
@@ -79,26 +88,39 @@ function Invoke-Tick {
     Write-YbState $st
   }
 
-  # 2) DETECT.
-  $hits = Get-YbYouTubeCacheHits
-  if ($null -eq $hits) {
-    Write-YbLog "[skip] DNS cache query failed - sample skipped (no accumulation)"
+  # 2) DETECT - meter inbound bytes to Google ranges, gated on YouTube DNS.
+  $curBytes = Get-YbGoogInboundBytes
+  if ($null -eq $curBytes) {
+    # Session missing/unreadable -> (re)arm it and skip this sample (no accrual).
+    if (-not $script:GoogRanges) { $script:GoogRanges = Get-YbGoogRanges }
+    $armed = $false
+    if ($script:GoogRanges) { $armed = Initialize-YbPktmon $script:GoogRanges }
+    $script:PrevBytes = $null
+    Write-YbLog "[skip] pktmon counters unreadable - re-armed=$armed, sample skipped (no accumulation)"
     return
   }
 
-  # Fresh signal = a content host we did not see last tick, or whose TTL bumped up
-  # (a re-resolution). A lingering cached entry whose TTL only decreases is NOT
-  # fresh, so it cannot keep the counter alive long after watching has stopped.
-  $curSig = @{}
-  foreach ($h in $hits) { $curSig[$h.Entry] = $h.TTL }
-  $fresh = $false
-  foreach ($k in $curSig.Keys) {
-    if (-not $script:PrevSig.ContainsKey($k)) { $fresh = $true; break }
-    if ($curSig[$k] -gt $script:PrevSig[$k]) { $fresh = $true; break }
-  }
-  $script:PrevSig = $curSig
-  if ($fresh) { $script:LastActiveEpoch = $now }
+  # Inbound throughput = byte delta since last tick. A drop (counters reset because
+  # the session was recreated) just rebaselines without billing.
+  if ($null -eq $script:PrevBytes -or $curBytes -lt $script:PrevBytes) { $delta = [int64]0 }
+  else { $delta = [int64]$curBytes - [int64]$script:PrevBytes }
+  $script:PrevBytes = $curBytes
+  $kbps = [int]([math]::Round(($delta * 8.0) / 1000.0 / $SampleSec))
 
+  # DNS gate: did a YouTube-family name resolve since the last check? Update the
+  # last-resolution timestamp; the gate then stays open for DNS_GATE_MIN minutes.
+  $nowDt = Get-Date
+  $since = $script:LastDnsCheck
+  if (($nowDt - $since).TotalSeconds -gt 3600) { $since = $nowDt.AddSeconds(-($SampleSec + 5)) }
+  if (($DnsGateMin -gt 0) -and (Test-YbYouTubeDnsSince $since)) { $script:LastDnsEpoch = $now }
+  $script:LastDnsCheck = $nowDt
+  $gateOpen = ($DnsGateMin -le 0) -or (($script:LastDnsEpoch -gt 0) -and (($now - $script:LastDnsEpoch) -lt ($DnsGateMin * 60)))
+  $gateStr  = if ($DnsGateMin -le 0) { 'off' } elseif ($gateOpen) { 'open' } else { 'closed' }
+
+  # Fresh watching sample = video-like throughput to Google AND the gate open.
+  $fresh = ($kbps -ge $MinKbps) -and $gateOpen
+  if ($fresh) { $script:LastActiveEpoch = $now }
+  # window_sec smoothing: keep counting through brief dips, stop ~window_sec after end.
   $active = ($script:LastActiveEpoch -gt 0) -and (($now - $script:LastActiveEpoch) -lt $WindowSec)
 
   # 3) ACCOUNT - only bill while watching AND not already budget-blocked.
@@ -120,13 +142,26 @@ function Invoke-Tick {
 
   Write-YbState $st
   if ($active) {
-    Write-YbLog "[sample] active +${SampleSec}s used=$($st.seconds_used)s/${limit}s blocked=$($st.blocked_by_budget)"
+    Write-YbLog "[sample] active +${SampleSec}s used=$($st.seconds_used)s/${limit}s blocked=$($st.blocked_by_budget) kbps=$kbps gate=$gateStr"
+  } elseif ($kbps -ge $MinKbps -and (($now - $script:LastIdleLog) -ge 60)) {
+    # Google bytes are flowing but not counted (gate closed, or after window end) -
+    # a rate-limited breadcrumb for tuning min_throughput_kbps / dns_gate_min.
+    $script:LastIdleLog = $now
+    Write-YbLog "[idle] google kbps=$kbps gate=$gateStr (not counted) used=$($st.seconds_used)s/${limit}s"
   }
 }
 
 function Invoke-Main {
   Limit-YbLog
-  Write-YbLog "[start] youtube-budget watcher (sample=${SampleSec}s window=${WindowSec}s limit=${DefLimit}m hosts=$HostsPath)"
+  # Arm the byte meter + the real-time DNS gate before the loop.
+  $script:GoogRanges = Get-YbGoogRanges
+  $rangeCount = if ($script:GoogRanges) { @($script:GoogRanges).Count } else { 0 }
+  $pktmon = $false
+  if ($script:GoogRanges) { $pktmon = Initialize-YbPktmon $script:GoogRanges }
+  $dnsCh = Enable-YbDnsChannel
+  $script:LastDnsCheck = Get-Date
+  if ($pktmon) { Start-Sleep -Seconds 1; $script:PrevBytes = Get-YbGoogInboundBytes }   # baseline so tick 1 has a valid delta
+  Write-YbLog "[start] youtube-budget watcher (sample=${SampleSec}s window=${WindowSec}s limit=${DefLimit}m min_kbps=${MinKbps} dns_gate=${DnsGateMin}m ranges=$rangeCount pktmon=$pktmon dns_ch=$dnsCh hosts=$HostsPath)"
   while ($true) {
     try { Invoke-Tick } catch { Write-YbLog "[warn] tick failed (continuing): $_" }
     Start-Sleep -Seconds $SampleSec

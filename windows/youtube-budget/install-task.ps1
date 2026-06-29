@@ -73,7 +73,7 @@ $cfgDst = Join-Path $Root 'config.json'
 $cfgSrc = Join-Path $scriptDir 'config.json'
 if (-not (Test-Path $cfgDst)) {
   if (Test-Path $cfgSrc) { Copy-Item -LiteralPath $cfgSrc -Destination $cfgDst -Force }
-  else { Set-Content -LiteralPath $cfgDst -Value (@{ limit_min = 60; sample_sec = 20; window_sec = 240 } | ConvertTo-Json) -Encoding UTF8 }
+  else { Set-Content -LiteralPath $cfgDst -Value (@{ limit_min = 60; sample_sec = 20; window_sec = 240; min_throughput_kbps = 64; dns_gate_min = 20 } | ConvertTo-Json) -Encoding UTF8 }
   Write-Host "    Seeded $cfgDst"
 } else {
   Write-Host "    Kept existing $cfgDst"

@@ -65,7 +65,13 @@ function Get-State {
 function Get-EffLimit($st) { [int]$st.limit_min * 60 + [int]$st.bonus_sec }
 
 function Set-ConfigLimit([int]$min) {
-  $obj = [ordered]@{ limit_min = $min; sample_sec = [int]$cfg.sample_sec; window_sec = [int]$cfg.window_sec }
+  $obj = [ordered]@{
+    limit_min           = $min
+    sample_sec          = [int]$cfg.sample_sec
+    window_sec          = [int]$cfg.window_sec
+    min_throughput_kbps = [int]$cfg.min_throughput_kbps
+    dns_gate_min        = [int]$cfg.dns_gate_min
+  }
   $dir = Split-Path -Parent $script:YbConfigPath
   if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
   Set-Content -LiteralPath $script:YbConfigPath -Value ($obj | ConvertTo-Json) -Encoding UTF8

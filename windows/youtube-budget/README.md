@@ -3,10 +3,11 @@
 A **browser-agnostic, fully automatic** daily watch-time limiter for YouTube that runs
 entirely on **Windows** — PowerShell + Windows Task Scheduler. It does **not** depend on
 WSL, Pi-hole, or Docker being up. It *measures* how long YouTube is actually being watched
-on this PC by polling the Windows DNS Client cache, bills it against a daily budget, and
-once the budget runs out it **blocks YouTube by splicing the same hosts section the manual
-toggle uses** (`..\parental-blocks\youtube.txt`) into the live Windows hosts file. The
-budget resets — and any block lifts — automatically on the next day.
+on this PC by **metering the streaming bytes to Google's video infrastructure** (gated on a
+real-time YouTube-family DNS signal), bills it against a daily budget, and once the budget
+runs out it **blocks YouTube by splicing the same hosts section the manual toggle uses**
+(`..\parental-blocks\youtube.txt`) into the live Windows hosts file. The budget resets — and
+any block lifts — automatically on the next day.
 
 It is tamper-resistant by placement: the watcher runs as **SYSTEM**, and its state lives
 under `C:\ProgramData\SafeHouse` with an ACL that lets a standard (non-admin) user **read but not
@@ -29,21 +30,39 @@ each tick does, in order:
    whether the PC ran through midnight, was **off** at midnight, or was **off for several
    days**. Running it twice in one day is a no-op.
 
-2. **Detect (pure Windows — no WSL/Pi-hole).** Poll the **Windows DNS Client cache**
-   (`Get-DnsClientCache`) for live resolutions of YouTube *content* domains:
-   `googlevideo.com` (the video-stream CDN — the strongest signal), `youtube.com`,
-   `youtubei.googleapis.com`, `ytimg.com`, `youtu.be`, `yt3.ggpht.com`. This works because
-   browser DoH is forced **off** by machine policy, so YouTube name lookups go through the
-   Windows resolver and land in this cache regardless of which browser or app is used.
-   Domains are matched as **anchored suffixes** (so `nsfwyoutube.com` never counts), and
-   hosts-file/blocked entries (`Data = 0.0.0.0`) are ignored.
+2. **Detect — connection-flow metering (pure Windows, no WSL/Pi-hole).** Two signals must
+   agree for a sample to count as watching:
 
-3. **Account.** A "fresh" signal — a content host that wasn't cached last tick, or whose
-   TTL bumped up (a re-resolution) — marks watching and updates a *last-active* timestamp.
-   A sliding **`window_sec`** (default 240s) keeps the sample counting through the gaps
-   between a long video's sparse DNS lookups, and stops counting ~`window_sec` after
-   watching truly ends. If active and not already blocked, the tick adds `sample_sec` to
-   `seconds_used`.
+   - **Byte meter (the primary signal).** A lightweight **`pktmon`** *counters-only* session
+     (no packet logging to disk) counts inbound bytes to **Google's published serving IP
+     ranges** (`https://www.gstatic.com/ipranges/goog.json`, cached to
+     `goog-ranges.json`, refreshed weekly; the cache is reused if a refresh fails). `pktmon`
+     allows 32 filters but Google publishes ~110 prefixes, so the watcher meters **all of
+     Google's IPv6 ranges** (the dual-stack path YouTube actually uses here) **plus the
+     largest IPv4 blocks** to fill the remaining slots. Each tick reads
+     `pktmon counters --json` and takes the **inbound-byte delta** since the last tick →
+     throughput in kbps. This survives **DNS caching and QUIC connection-coalescing**, which
+     made the old DNS-cache approach blind: modern Edge reuses warm IPs and streams video
+     over already-open Google connections with almost **no fresh `googlevideo.com` lookups**.
+
+   - **DNS gate (keeps Drive/updates/etc. from counting).** A real-time
+     **`Microsoft-Windows-DNS-Client/Operational`** ETW channel is read each tick for any
+     resolution of a YouTube-family name (`googlevideo.com`, `youtube.com`,
+     `youtubei.googleapis.com`, `ytimg.com`, `youtu.be`, `ggpht.com`) — matched as **anchored
+     suffixes** (so `nsfwyoutube.com` never counts) on the query-name *property* (so it is
+     locale-independent). Unlike the DNS *cache*, this catches even the sparse, short-TTL
+     lookups that never linger in `Get-DnsClientCache`. A lookup opens the gate for
+     `dns_gate_min` minutes (default **20**); set `dns_gate_min = 0` to disable the gate
+     (throughput-only).
+
+3. **Account.** A sample is **fresh watching** when inbound throughput to Google exceeds
+   `min_throughput_kbps` (default **64**, well under any real video bitrate yet above
+   keep-alive chatter) **and** the DNS gate is open. A fresh sample updates a *last-active*
+   timestamp; a sliding **`window_sec`** (default 240s) keeps the sample counting through
+   brief throughput dips between video segments and stops counting ~`window_sec` after
+   streaming truly ends. If active and not already blocked, the tick adds `sample_sec` to
+   `seconds_used`. The per-tick `[sample]` log line records `kbps=… gate=open|closed|off`
+   so the two knobs can be tuned from the world-readable log.
 
 4. **Enforce.** Effective limit = `limit_min*60 + bonus_sec` (default limit **60 min**).
    When `seconds_used >= limit` and not yet blocked, splice
@@ -64,31 +83,51 @@ It shares the **block host list** with the manual toggle and never double-insert
 it alone. The automatic daily reset lifts only the **auto** block — a YouTube block you
 applied by hand with `parental-toggle.ps1` is left in place.
 
-Each tick is resilient: a transient error is logged and the loop continues; a failed
-DNS-cache query skips the sample (no phantom time). Log: `C:\ProgramData\SafeHouse\youtube-budget.log`.
+Each tick is resilient: a transient error is logged and the loop continues; if the `pktmon`
+counters can't be read the watcher re-arms the session and skips that sample (no phantom
+time). Log: `C:\ProgramData\SafeHouse\youtube-budget.log`.
 
 ### Detection is approximate (read this)
 
-This measures **DNS activity**, not video playback. A long video re-resolves
-`googlevideo.com` every so often (and YouTube polls `youtubei.googleapis.com`), which keeps
-the sliding window "active"; conversely a paused tab that keeps polling can read as active.
-Treat the number as a good-enough budget, not a stopwatch — tune `window_sec` and the limit
-after a few days of real use. Because it is hosts/DNS-based, it only sees lookups that go
-through the Windows resolver: an app using its own DoH/DoT or a cached IP is invisible to
-both detection and the block. (Browser DoH is disabled by machine policy precisely so this
-holds.) A future enhancement could swap cache-polling for a real-time
-`Microsoft-Windows-DNS-Client` **ETW** trace for tighter timing; cache-polling is the
-documented, dependency-free baseline.
+This measures **streaming bytes to Google's edge**, gated on YouTube DNS — not the video
+element itself, so treat the number as a good-enough budget, not a frame-accurate stopwatch.
+Known limitations and the knob that tunes each:
+
+- **False positives — other Google bulk traffic.** Google Drive sync, an Edge/Chrome update,
+  or the Play-games VM all ride Google IP ranges. The **DNS gate** (`dns_gate_min`, default
+  20 min) suppresses these because they don't resolve YouTube-family names; with the gate
+  **off** (`dns_gate_min = 0`) any sustained Google download above `min_throughput_kbps`
+  would count. If YouTube is open in another tab while such a download runs, the gate is open
+  and the bytes *can* be over-counted — raise `min_throughput_kbps` or keep the gate on.
+- **Background YouTube chatter.** A paused/idle YouTube tab still resolves names but streams
+  little, so it stays under `min_throughput_kbps` and does **not** accrue — raise the
+  threshold if low-bitrate audio-only playback should be ignored, lower it to catch 144p.
+- **IPv4 coverage.** Because `pktmon` caps at 32 filters, the IPv4 set is the *largest*
+  Google blocks (it covers all IPv6, which is the path this dual-stack box actually uses for
+  Google/YouTube). A pure-IPv4 fallback could miss some smaller Google edge ranges; refresh
+  `goog-ranges.json` from Google keeps the set current.
+- **Self-contained DoH/DoT apps.** An app resolving names itself (own DoH/DoT) bypasses the
+  DNS gate; the byte meter still sees the traffic but the gate may not open. Browser DoH is
+  disabled by machine policy precisely so the gate holds.
+
+Tune `min_throughput_kbps`, `dns_gate_min`, `window_sec`, and the limit after a few days of
+real use — the `[sample]` / `[idle]` log lines print `kbps=…` and `gate=…` to guide it.
 
 ## State & config
 
 - **State:** `C:\ProgramData\SafeHouse\youtube-budget.json` =
   `{ date, seconds_used, limit_min, bonus_sec, blocked_by_budget }`, written atomically.
-- **Config:** `C:\ProgramData\SafeHouse\config.json` = `{ limit_min, sample_sec, window_sec }`
-  (defaults 60 / 20 / 240). `limit_min` and `bonus_sec` take effect live each tick; changing
-  `sample_sec` / `window_sec` needs the task restarted (`Stop-ScheduledTask` /
-  `Start-ScheduledTask -TaskName SafeHouse-YouTubeBudget`, or a reboot).
+- **Config:** `C:\ProgramData\SafeHouse\config.json` =
+  `{ limit_min, sample_sec, window_sec, min_throughput_kbps, dns_gate_min }`
+  (defaults 60 / 20 / 240 / 64 / 20). `limit_min` and `bonus_sec` take effect live each tick;
+  changing `sample_sec`, `window_sec`, `min_throughput_kbps`, or `dns_gate_min` needs the task
+  restarted (`Stop-ScheduledTask` / `Start-ScheduledTask -TaskName SafeHouse-YouTubeBudget`,
+  or a reboot).
+- **Cache:** `C:\ProgramData\SafeHouse\goog-ranges.json` — Google's published IP prefixes,
+  refetched weekly (reused if a refetch fails).
 - **ACL** (set by `install-task.ps1`): SYSTEM + Administrators = Full, **Users = read-only**.
+- **Machine change:** the watcher enables the `Microsoft-Windows-DNS-Client/Operational` log
+  channel (off by default) for the real-time DNS gate.
 
 ## Arm / disarm
 
@@ -153,6 +192,7 @@ counts as watch time toward the budget).
 - `youtube-budget.ps1` — the watcher loop (date-reset → detect → account → enforce).
 - `youtube-budget-ctl.ps1` — parent CLI (status / set-limit / grant / block / allow / reset).
 - `install-task.ps1` — self-elevating installer: ProgramData + ACL + the SYSTEM task.
-- `common.ps1` — shared helpers (state, byte-preserving hosts splice, DNS-cache detection).
-- `config.json` — documented config sample (limit / sample / window).
+- `common.ps1` — shared helpers (state, byte-preserving hosts splice, pktmon byte metering +
+  DNS-Client ETW gate detection).
+- `config.json` — documented config sample (limit / sample / window / min-throughput / dns-gate).
 - Enforcement host list: `..\parental-blocks\youtube.txt` (shared with `parental-toggle.ps1`).
