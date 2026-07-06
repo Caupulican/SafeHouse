@@ -4,8 +4,10 @@ SafeHouse - YouTube watch-time budget: shared helpers (Windows-native).
 Dot-sourced by youtube-budget.ps1 (the watcher) and youtube-budget-ctl.ps1 (the
 parent CLI). Provides: paths/config, local-date helper, atomic JSON state I/O, the
 byte-preserving hosts block/unblock splice (mirrors windows\parental-toggle.ps1),
-connection-flow watch detection (pktmon byte metering to Google's IP ranges, gated
-by a real-time DNS-Client ETW signal), and DNS flush. No side effects on import.
+connection-flow watch detection (RESOLVED-IP PINNING: harvest the IPs that
+YouTube-family hostnames resolve to from the DNS-Client ETW channel, pin them, and
+meter inbound bytes to EXACTLY those IPs with pktmon), and DNS flush. No side effects
+on import.
 
 State + config + log live under C:\ProgramData\SafeHouse (created with a locked-down
 ACL by install-task.ps1: SYSTEM + Administrators full, Users read-only). For testing
@@ -23,35 +25,26 @@ $script:YbRoot       = if ($env:YB_ROOT) { $env:YB_ROOT } else { 'C:\ProgramData
 $script:YbStatePath  = Join-Path $script:YbRoot 'youtube-budget.json'
 $script:YbConfigPath = Join-Path $script:YbRoot 'config.json'
 $script:YbLogPath    = Join-Path $script:YbRoot 'youtube-budget.log'
-$script:YbGoogPath   = Join-Path $script:YbRoot 'goog-ranges.json'   # cached Google IP prefixes
+$script:YbPinsPath   = Join-Path $script:YbRoot 'yt-pinned-ips.json'  # resolved YouTube IPs we meter
+$script:YbGoogPath   = Join-Path $script:YbRoot 'goog-ranges.json'    # cached Google prefixes (GGC diagnostics only)
 $script:YbScriptDir  = Split-Path -Parent $PSCommandPath
 
 # --- connection-flow metering: tools + constants -----------------------------
 $script:YbPktMon       = Join-Path $env:SystemRoot 'System32\PktMon.exe'   # byte meter (counts UDP/QUIC too)
-$script:YbGoogUrl      = 'https://www.gstatic.com/ipranges/goog.json'      # Google's published serving prefixes
+$script:YbGoogUrl      = 'https://www.gstatic.com/ipranges/goog.json'      # Google's published prefixes (for GGC diagnostics)
 $script:YbGoogMaxAgeD  = 7            # refresh the cached prefixes if older than this many days
 $script:YbPktFilterTag = 'SafeHouseYB'  # name stamped on every pktmon filter we own
-$script:YbMaxFilters   = 32           # pktmon allows up to 32 active filters at once
-$script:YbDnsChannel   = 'Microsoft-Windows-DNS-Client/Operational'        # real-time DNS gate signal
+$script:YbMaxFilters   = 32           # pktmon allows up to 32 active filters at once = our pinned-IP cap
+$script:YbDnsChannel   = 'Microsoft-Windows-DNS-Client/Operational'        # source of resolved IPs
+# YouTube-family DNS names whose answers we pin. Matched as a case-insensitive
+# substring of the query name (googlevideo|youtube|ytimg|ggpht|yt3; i.ytimg c ytimg).
+$script:YbYtNameRegex  = 'googlevideo|youtube|ytimg|ggpht|yt3'
 
 # --- hosts marker + enforcement constants ------------------------------------
 $script:YbBlockName   = 'YouTube'
 $script:YbStartMarker = '# === Parental block: YouTube (auto: daily budget) ==='
 $script:YbEndMarker   = '# === end YouTube block ==='
 $script:YbUtf8NoBom   = New-Object System.Text.UTF8Encoding($false)
-
-# YouTube-family DNS names used as the GATE: a recent real-time resolution of any
-# of these is what separates "YouTube bytes" from generic Google bulk traffic
-# (Drive sync, Edge update, Play-games VM) that also rides Google's IP ranges.
-# Matched as DNS suffixes (E or *.E), anchored so nsfwyoutube.com etc. never match.
-$script:YbContentDomains = @(
-  'googlevideo.com',          # the video-stream CDN - the strongest watch signal
-  'youtube.com',              # site + API surface
-  'youtubei.googleapis.com',  # InnerTube API (playback / next / player calls)
-  'ytimg.com',                # thumbnails / static (i.ytimg.com, s.ytimg.com, ...)
-  'youtu.be',                 # short links
-  'ggpht.com'                 # channel avatars / images (yt3.ggpht.com, ...)
-)
 
 # --- hosts path (override with $env:YB_HOSTS for testing on a copy) ----------
 function Get-YbHostsPath {
@@ -96,15 +89,16 @@ function Limit-YbLog([int]$MaxBytes = 2097152) {
 function Get-YbToday { (Get-Date).ToString('yyyy-MM-dd') }
 
 # --- config ------------------------------------------------------------------
-# Returns @{ limit_min; sample_sec; window_sec; min_throughput_kbps; dns_gate_min }
+# Returns @{ limit_min; sample_sec; window_sec; min_throughput_kbps; pin_idle_expire_min }
 # from ProgramData\config.json, then a script-local config.json, then hard defaults.
-#   min_throughput_kbps - sustained inbound kbps to Google ranges that counts as
-#                         video-like watching (default 64; tune up to ignore bursts).
-#   dns_gate_min        - only count Google bytes when a YouTube-family DNS lookup
-#                         happened within this many minutes (default 20; 0 disables
-#                         the gate = throughput-only).
+#   min_throughput_kbps  - sustained inbound kbps to the PINNED IPs that counts as
+#                          video-like watching (default 64; tune up to ignore bursts).
+#   pin_idle_expire_min  - drop a pinned IP after this many minutes with zero bytes
+#                          flowing to it (default 30). A pin persists by ACTIVITY, not
+#                          by DNS recency, so a coalesced QUIC session that stops
+#                          re-resolving stays metered for as long as it streams.
 function Get-YbConfig {
-  $cfg = @{ limit_min = 60; sample_sec = 20; window_sec = 240; min_throughput_kbps = 64; dns_gate_min = 20 }
+  $cfg = @{ limit_min = 60; sample_sec = 20; window_sec = 240; min_throughput_kbps = 64; pin_idle_expire_min = 30 }
   $paths = @($script:YbConfigPath, (Join-Path $script:YbScriptDir 'config.json'))
   foreach ($p in $paths) {
     if ($p -and (Test-Path $p)) {
@@ -114,7 +108,7 @@ function Get-YbConfig {
         if ($null -ne $o.sample_sec)          { $cfg.sample_sec          = [int]$o.sample_sec }
         if ($null -ne $o.window_sec)          { $cfg.window_sec          = [int]$o.window_sec }
         if ($null -ne $o.min_throughput_kbps) { $cfg.min_throughput_kbps = [int]$o.min_throughput_kbps }
-        if ($null -ne $o.dns_gate_min)        { $cfg.dns_gate_min        = [int]$o.dns_gate_min }
+        if ($null -ne $o.pin_idle_expire_min) { $cfg.pin_idle_expire_min = [int]$o.pin_idle_expire_min }
         break
       } catch { }
     }
@@ -123,7 +117,7 @@ function Get-YbConfig {
   if ($cfg.sample_sec -lt 1) { $cfg.sample_sec = 20 }
   if ($cfg.window_sec -lt $cfg.sample_sec) { $cfg.window_sec = $cfg.sample_sec }
   if ($cfg.min_throughput_kbps -lt 0) { $cfg.min_throughput_kbps = 0 }
-  if ($cfg.dns_gate_min -lt 0) { $cfg.dns_gate_min = 0 }
+  if ($cfg.pin_idle_expire_min -lt 1) { $cfg.pin_idle_expire_min = 1 }
   return $cfg
 }
 
@@ -218,85 +212,118 @@ function Invoke-YbFlushDns {
   try { & ipconfig /flushdns | Out-Null } catch { }
 }
 
-# --- detection: connection-flow metering (pktmon) + DNS gate -----------------
-# Modern YouTube is invisible to DNS-cache polling: Edge reuses warm IPs and
-# coalesces QUIC connections, so video streams over already-open Google connections
-# with almost no fresh googlevideo.com lookups. We instead METER the actual inbound
-# bytes to Google's serving IP ranges (which survive caching/coalescing) and GATE
-# that on a recent real-time YouTube-family DNS resolution so generic Google bulk
-# traffic (Drive, Edge-update, the Play-games VM) does not falsely count.
+# --- detection: resolved-IP pinning + pktmon byte metering -------------------
+# Modern YouTube is invisible both to DNS-cache polling AND to metering "Google's
+# published ranges": Edge coalesces QUIC connections onto warm IPs (so video streams
+# with almost no fresh googlevideo.com lookups), and much of the video is served from
+# Google Global Cache (GGC) nodes embedded in the ISP whose IPs are NOT in goog.json
+# at all. We instead PIN the exact IPs that YouTube-family hostnames resolve to (read
+# live from the DNS-Client ETW channel) and meter inbound bytes to EXACTLY those IPs
+# with pktmon (which counts UDP/QUIC too). Because only YouTube-resolved IPs are ever
+# metered, Gmail/Drive/Search never count; and a pin survives QUIC coalescing because
+# it is kept alive by ACTIVITY (bytes flowing), not by DNS recency.
 
-# Build the Google IP prefixes to meter (<= YbMaxFilters CIDRs). pktmon allows only
-# 32 active filters but Google publishes ~110 prefixes, so we take ALL IPv6 prefixes
-# (full coverage of the dual-stack path Google/YouTube actually uses on this box)
-# plus the largest IPv4 blocks to fill the remaining slots (largest = most Google
-# address space per slot). Fetches Google's published list to a cache, refreshing
-# when older than YbGoogMaxAgeD days; on a fetch failure it reuses the cache.
-# Returns an array of CIDR strings, or $null if neither network nor cache is usable.
-function Get-YbGoogRanges {
-  $needFetch = $true
-  if (Test-Path $script:YbGoogPath) {
-    $ageDays = ((Get-Date) - (Get-Item -LiteralPath $script:YbGoogPath).LastWriteTime).TotalDays
-    if ($ageDays -lt $script:YbGoogMaxAgeD) { $needFetch = $false }
+# --- pinned-IP state (persisted): [ { ip; first_seen; last_active } ] ---------
+# first_seen / last_active are unix seconds. last_active drives expiry + the 32-cap
+# eviction order.
+function Read-YbPins {
+  if (-not (Test-Path $script:YbPinsPath)) { return @() }
+  try { $o = Get-Content -Raw -LiteralPath $script:YbPinsPath | ConvertFrom-Json } catch { return @() }
+  if ($null -eq $o) { return @() }
+  $pins = @()
+  foreach ($p in @($o)) {
+    if ([string]::IsNullOrWhiteSpace([string]$p.ip)) { continue }
+    $pins += @{ ip = [string]$p.ip; first_seen = [int]$p.first_seen; last_active = [int]$p.last_active }
   }
-  if ($needFetch) {
-    try {
-      $resp = Invoke-WebRequest -Uri $script:YbGoogUrl -UseBasicParsing -TimeoutSec 20
-      $text = [string]$resp.Content
-      $null = ($text | ConvertFrom-Json)   # validate before trusting/caching it
-      [System.IO.File]::WriteAllText($script:YbGoogPath, $text, $script:YbUtf8NoBom)
-    } catch { }                            # fall back to the cached copy below
+  # Emit elements to the pipeline (callers wrap with @()); do NOT use ,$pins - that
+  # returns the whole array as a single item and @() would then nest it.
+  return $pins
+}
+
+# Write-YbPins @( @{ip;first_seen;last_active} ) -> atomic temp-write + replace.
+# Serialised element-by-element so a 0- or 1-element set still emits a JSON array.
+function Write-YbPins($Pins) {
+  $dir = Split-Path -Parent $script:YbPinsPath
+  if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+  $items = @(foreach ($p in @($Pins)) {
+    ([ordered]@{ ip = [string]$p.ip; first_seen = [int]$p.first_seen; last_active = [int]$p.last_active } | ConvertTo-Json -Compress)
+  })
+  $json = '[' + ($items -join ',') + ']'
+  $tmp  = Join-Path $dir ('.ybpins.' + [System.IO.Path]::GetRandomFileName())
+  [System.IO.File]::WriteAllText($tmp, ($json + "`r`n"), $script:YbUtf8NoBom)
+  Move-Item -LiteralPath $tmp -Destination $script:YbPinsPath -Force
+}
+
+# Harvest the answer IPs of YouTube-family resolutions from the DNS-Client channel
+# since $Since. Event 3008 ("query completed") property [0] is the QueryName and
+# property [4] is the ';'-separated QueryResults (a CNAME chain + the answer IPs; IPv4
+# answers may appear mapped as ::ffff:x.x.x.x, alongside raw IPv6). Non-IP tokens
+# (CNAMEs) are dropped. Best-effort: returns @() if the channel is idle/unreadable.
+function Get-YbResolvedYtIps([datetime]$Since) {
+  try {
+    $ev = Get-WinEvent -FilterHashtable @{ LogName = $script:YbDnsChannel; Id = 3008; StartTime = $Since } -ErrorAction Stop
+  } catch {
+    return @()   # "no events found" (idle) or channel unavailable
   }
-  if (-not (Test-Path $script:YbGoogPath)) { return $null }
-  try { $obj = Get-Content -Raw -LiteralPath $script:YbGoogPath | ConvertFrom-Json } catch { return $null }
-  if ($null -eq $obj -or $null -eq $obj.prefixes) { return $null }
-  $v6 = @($obj.prefixes | Where-Object { $_.ipv6Prefix } | ForEach-Object { [string]$_.ipv6Prefix })
-  $v4 = @($obj.prefixes | Where-Object { $_.ipv4Prefix } | ForEach-Object { [string]$_.ipv4Prefix })
-  $v4 = @($v4 | Sort-Object { [int](($_ -split '/')[1]) })   # ascending mask = largest blocks first
-  $ranges = @($v6)
-  $slotsForV4 = $script:YbMaxFilters - $ranges.Count
-  if ($slotsForV4 -gt 0) { $ranges += @($v4 | Select-Object -First $slotsForV4) }
-  if ($ranges.Count -gt $script:YbMaxFilters) { $ranges = @($ranges[0..($script:YbMaxFilters - 1)]) }
-  if (-not $ranges -or $ranges.Count -eq 0) { return $null }
-  return ,$ranges
+  $ips = New-Object System.Collections.Generic.List[string]
+  foreach ($e in $ev) {
+    $qn = $null
+    try { $qn = [string]$e.Properties[0].Value } catch { }
+    if ([string]::IsNullOrWhiteSpace($qn)) { continue }
+    if ($qn -notmatch $script:YbYtNameRegex) { continue }   # -match is case-insensitive
+    $res = $null
+    try { $res = [string]$e.Properties[4].Value } catch { }
+    if ([string]::IsNullOrWhiteSpace($res)) { continue }
+    foreach ($tok in ($res -split ';')) {
+      $t = $tok.Trim()
+      if (-not $t) { continue }
+      if ($t -match '^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$') { $t = $matches[1] }   # unmap IPv4
+      $parsed = [System.Net.IPAddress]::Any
+      if ([System.Net.IPAddress]::TryParse($t, [ref]$parsed)) {
+        $s = $parsed.ToString()
+        if (-not $ips.Contains($s)) { [void]$ips.Add($s) }
+      }
+    }
+  }
+  return $ips.ToArray()
 }
 
 # (Re)create the lightweight pktmon counters-only session whose filters match the
-# given Google ranges. Idempotent: tears down any prior session/filters first.
-# Counters-only (start -c -o) = no packet logging to disk, just per-component byte
-# counters, so overhead stays minimal. Returns $true on success.
-function Initialize-YbPktmon($Ranges) {
+# given IPs (pinned /32 & /128). Idempotent: tears down any prior session/filters
+# first. Counters-only (start -c -o) = no packet logging to disk, just per-component
+# byte counters, so overhead stays minimal. Returns $true on success.
+function Initialize-YbPktmon($Filters) {
   $ErrorActionPreference = 'SilentlyContinue'   # pktmon writes benign stderr; don't let EAP=Stop trip
   if (-not (Test-Path $script:YbPktMon)) { return $false }
-  if (-not $Ranges -or @($Ranges).Count -eq 0) { return $false }
+  if (-not $Filters -or @($Filters).Count -eq 0) { return $false }
   try {
     & $script:YbPktMon stop 2>&1 | Out-Null
     & $script:YbPktMon filter remove 2>&1 | Out-Null
     $i = 0
-    foreach ($r in $Ranges) {
+    foreach ($f in $Filters) {
       $i++
       if ($i -gt $script:YbMaxFilters) { break }
-      & $script:YbPktMon filter add ('{0}{1}' -f $script:YbPktFilterTag, $i) -i $r 2>&1 | Out-Null
+      & $script:YbPktMon filter add ('{0}{1}' -f $script:YbPktFilterTag, $i) -i $f 2>&1 | Out-Null
     }
     & $script:YbPktMon start -c -o 2>&1 | Out-Null
     return $true
   } catch { return $false }
 }
 
-# Tear down our pktmon session + filters (called on demand; the watcher otherwise
-# leaves the counters-only session running).
+# Tear down our pktmon session + filters (called when the pinned set empties, and at
+# watcher startup to clear any stale session).
 function Stop-YbPktmon {
   $ErrorActionPreference = 'SilentlyContinue'
   try { & $script:YbPktMon stop 2>&1 | Out-Null; & $script:YbPktMon filter remove 2>&1 | Out-Null } catch { }
 }
 
-# Read the pktmon counters and return the maximum cumulative INBOUND bytes across
-# all monitored components. pktmon counts the same packet at every layer of the
-# network stack, so SUMMING components multi-counts; the MAX ~= the physical NIC's
-# view of matched inbound bytes - one monotonic number since the session started.
-# Returns $null if the session isn't running / counters can't be parsed, so the
-# caller skips the sample (no phantom accounting).
-function Get-YbGoogInboundBytes {
+# Read the pktmon counters and return the maximum cumulative INBOUND bytes across all
+# monitored components. pktmon counts the same packet at every layer of the network
+# stack, so SUMMING components multi-counts; the MAX ~= the physical NIC's view of
+# matched inbound bytes - one monotonic number since the session started. Returns $null
+# if the session isn't running / counters can't be parsed, so the caller skips the
+# sample (no phantom accounting).
+function Get-YbInboundBytes {
   $ErrorActionPreference = 'SilentlyContinue'
   if (-not (Test-Path $script:YbPktMon)) { return $null }
   try { $raw = (& $script:YbPktMon counters --json 2>$null | Out-String) } catch { return $null }
@@ -316,8 +343,8 @@ function Get-YbGoogInboundBytes {
   return $max
 }
 
-# Ensure the DNS-Client/Operational ETW channel is enabled (off by default). It is
-# the real-time DNS gate signal - it logs every resolution as it happens, so it
+# Ensure the DNS-Client/Operational ETW channel is enabled (off by default). It is the
+# real-time source of resolved IPs - it logs every resolution as it happens, so it
 # catches the sparse, short-TTL YouTube lookups that never linger in the DNS cache.
 # Idempotent, best-effort; the watcher (SYSTEM) calls this once at startup.
 function Enable-YbDnsChannel {
@@ -332,23 +359,62 @@ function Enable-YbDnsChannel {
   }
 }
 
-# DNS gate: $true if any YouTube-family name was resolved at/after $Since. Reads the
-# DNS-Client/Operational channel (events 3006 query / 3008 query-completed) and the
-# QueryName *property* (Properties[0]) so it is locale-independent. Best-effort:
-# returns $false if the channel is empty or unreadable.
-function Test-YbYouTubeDnsSince([datetime]$Since) {
-  $suffixPattern = '(^|\.)(' +
-    (($script:YbContentDomains | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')$'
-  try {
-    $ev = Get-WinEvent -FilterHashtable @{ LogName = $script:YbDnsChannel; Id = 3006, 3008; StartTime = $Since } -ErrorAction Stop
-  } catch {
-    return $false   # "no events found" (normal/idle) or channel unavailable
+# --- GGC diagnostics (not on the metering hot path) --------------------------
+# Load Google's published prefixes as @{ bytes; bits } entries, ONLY so [pin] log
+# lines can flag which pinned IPs are GGC nodes OUTSIDE goog.json - i.e. exactly the
+# traffic the old range meter structurally missed. Fetches/refreshes the goog.json
+# cache (weekly; reused on failure); returns @() if unavailable.
+function Get-YbGoogNets {
+  $needFetch = $true
+  if (Test-Path $script:YbGoogPath) {
+    $ageDays = ((Get-Date) - (Get-Item -LiteralPath $script:YbGoogPath).LastWriteTime).TotalDays
+    if ($ageDays -lt $script:YbGoogMaxAgeD) { $needFetch = $false }
   }
-  foreach ($e in $ev) {
-    $qn = $null
-    try { $qn = [string]$e.Properties[0].Value } catch { }
-    if ([string]::IsNullOrWhiteSpace($qn)) { continue }
-    if ($qn.ToLower() -match $suffixPattern) { return $true }
+  if ($needFetch) {
+    try {
+      $resp = Invoke-WebRequest -Uri $script:YbGoogUrl -UseBasicParsing -TimeoutSec 20
+      $text = [string]$resp.Content
+      $null = ($text | ConvertFrom-Json)   # validate before trusting/caching it
+      [System.IO.File]::WriteAllText($script:YbGoogPath, $text, $script:YbUtf8NoBom)
+    } catch { }                            # fall back to the cached copy below
+  }
+  if (-not (Test-Path $script:YbGoogPath)) { return @() }
+  try { $obj = Get-Content -Raw -LiteralPath $script:YbGoogPath | ConvertFrom-Json } catch { return @() }
+  if ($null -eq $obj -or $null -eq $obj.prefixes) { return @() }
+  $nets = @()
+  foreach ($p in $obj.prefixes) {
+    $cidr = if ($p.ipv4Prefix) { [string]$p.ipv4Prefix } elseif ($p.ipv6Prefix) { [string]$p.ipv6Prefix } else { $null }
+    if (-not $cidr) { continue }
+    $parts = $cidr -split '/'
+    if ($parts.Count -ne 2) { continue }
+    $ip = [System.Net.IPAddress]::Any
+    if (-not [System.Net.IPAddress]::TryParse($parts[0], [ref]$ip)) { continue }
+    $nets += @{ bytes = $ip.GetAddressBytes(); bits = [int]$parts[1] }
+  }
+  return $nets
+}
+
+# True if $IpStr falls inside any published prefix in $Nets (family-aware bit-prefix
+# compare on the raw address bytes; works uniformly for IPv4 and IPv6).
+function Test-YbIpInGoog([string]$IpStr, $Nets) {
+  $ip = [System.Net.IPAddress]::Any
+  if (-not [System.Net.IPAddress]::TryParse($IpStr, [ref]$ip)) { return $false }
+  $ab = $ip.GetAddressBytes()
+  foreach ($n in @($Nets)) {
+    $nb = $n.bytes
+    if ($nb.Length -ne $ab.Length) { continue }   # different address family
+    $bits = [int]$n.bits; $ok = $true; $i = 0
+    while ($bits -gt 0) {
+      if ($bits -ge 8) {
+        if ($ab[$i] -ne $nb[$i]) { $ok = $false; break }
+        $bits -= 8; $i++
+      } else {
+        $mask = [byte](((0xFF -shl (8 - $bits)) -band 0xFF))
+        if (($ab[$i] -band $mask) -ne ($nb[$i] -band $mask)) { $ok = $false }
+        break
+      }
+    }
+    if ($ok) { return $true }
   }
   return $false
 }

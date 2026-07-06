@@ -13,15 +13,19 @@ it does, in order:
      was off at midnight, or was off for several days. Running it twice in one day
      is a no-op.
 
-  2. DETECT - pure Windows, no WSL/Pi-hole. METER the inbound bytes to Google's
-     serving IP ranges with a lightweight pktmon counters-only session (this survives
-     DNS caching / QUIC connection-coalescing, which made cache-polling blind to
-     modern YouTube), and GATE that on a recent real-time YouTube-family DNS lookup
-     (Microsoft-Windows-DNS-Client ETW). A sample is "fresh" watching when the
-     inbound throughput to Google exceeds MIN_THROUGHPUT_KBPS *and* a YouTube-family
-     name resolved within DNS_GATE_MIN minutes. A sliding WINDOW_SEC keeps counting
-     through brief dips between video segments and stops ~WINDOW_SEC after streaming
-     ends.
+  2. DETECT - RESOLVED-IP PINNING (pure Windows, no WSL/Pi-hole). Harvest the IPs that
+     YouTube-family hostnames resolve to from the Microsoft-Windows-DNS-Client ETW
+     channel, PIN them, and METER inbound bytes to EXACTLY those IPs with a lightweight
+     pktmon counters-only session. This catches the stream wherever it flows - Google's
+     own IPs (v4 AND v6) and the Google Global Cache (GGC) nodes embedded in the ISP
+     whose IPs are not in goog.json at all - which range-based metering structurally
+     missed. Because only YouTube-resolved IPs are pinned, Gmail/Drive/Search never
+     count (no DNS gate needed). A pin is kept alive by ACTIVITY (bytes flowing), not
+     DNS recency, so a coalesced QUIC session that stops re-resolving stays metered;
+     an idle pin expires after pin_idle_expire_min. A sample is "watching" when inbound
+     throughput to the pinned IPs exceeds min_throughput_kbps; a sliding window_sec
+     keeps counting through brief dips between segments and stops ~window_sec after
+     streaming ends.
 
   3. ACCOUNT - if active and not already blocked, add sample_sec to seconds_used.
 
@@ -30,8 +34,8 @@ it does, in order:
      (shared list ..\parental-blocks\youtube.txt), set blocked_by_budget, flush DNS.
 
 Resilient: a transient error in a tick is logged and the loop continues; an
-unreadable pktmon session is re-armed and the sample skipped (no phantom
-accounting). State + log live under C:\ProgramData\SafeHouse (see common.ps1).
+unreadable pktmon session is re-armed and the sample skipped (no phantom accounting).
+State + pins + log live under C:\ProgramData\SafeHouse (see common.ps1).
 
 Run modes:
   .\youtube-budget.ps1            # the supervised loop (what the task runs)
@@ -51,16 +55,16 @@ $SampleSec  = [int]$cfg.sample_sec
 $WindowSec  = [int]$cfg.window_sec
 $DefLimit   = [int]$cfg.limit_min
 $MinKbps    = [int]$cfg.min_throughput_kbps
-$DnsGateMin = [int]$cfg.dns_gate_min
+$PinIdleSec = [int]$cfg.pin_idle_expire_min * 60
 $HostsPath  = Get-YbHostsPath
 
 # In-memory detection state (a persistent loop, so no need to persist these).
-$script:GoogRanges      = $null      # cached list of Google CIDRs we meter
-$script:PrevBytes       = $null      # last cumulative inbound-bytes reading (for the delta)
-$script:LastActiveEpoch = 0          # unix seconds of the last "fresh" watching sample
-$script:LastDnsEpoch    = 0          # unix seconds of the last YouTube-family DNS lookup
-$script:LastDnsCheck    = Get-Date   # high-water mark for the DNS-gate event query
-$script:LastIdleLog     = 0          # rate-limit for the [idle] diagnostic line
+$script:PrevBytes    = $null      # last cumulative inbound-bytes reading (for the delta)
+$script:LastActive   = 0          # unix seconds of the last "fresh" (video-like) sample
+$script:MeteredIps   = @()        # IPs currently loaded as pktmon filters (sorted)
+$script:LastDnsCheck = Get-Date   # high-water mark for the DNS harvest query
+$script:GoogNets     = @()        # published prefixes, for GGC-vs-goog diagnostics only
+$script:LastIdleLog  = 0          # rate-limit for the [idle] diagnostic line
 
 function Get-NowEpoch { [int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
 
@@ -88,42 +92,87 @@ function Invoke-Tick {
     Write-YbState $st
   }
 
-  # 2) DETECT - meter inbound bytes to Google ranges, gated on YouTube DNS.
-  $curBytes = Get-YbGoogInboundBytes
-  if ($null -eq $curBytes) {
-    # Session missing/unreadable -> (re)arm it and skip this sample (no accrual).
-    if (-not $script:GoogRanges) { $script:GoogRanges = Get-YbGoogRanges }
-    $armed = $false
-    if ($script:GoogRanges) { $armed = Initialize-YbPktmon $script:GoogRanges }
-    $script:PrevBytes = $null
-    Write-YbLog "[skip] pktmon counters unreadable - re-armed=$armed, sample skipped (no accumulation)"
-    return
+  # 2) DETECT - resolved-IP pinning + pktmon byte metering.
+
+  # 2a) Meter bytes to the set armed during the just-elapsed interval (last tick's
+  #     MeteredIps). Read BEFORE re-arming so the delta reflects that stable set.
+  $curBytes = $null
+  if (@($script:MeteredIps).Count -gt 0) {
+    $curBytes = Get-YbInboundBytes
+    if ($null -eq $curBytes) {
+      # Session missing/unreadable -> force a clean re-arm below (no accrual this tick).
+      $script:MeteredIps = @()
+      $script:PrevBytes  = $null
+      Write-YbLog '[skip] pktmon counters unreadable - re-arming pinned filters, sample skipped'
+    }
   }
+  if ($null -eq $curBytes) {
+    $kbps = 0
+  } else {
+    if ($null -eq $script:PrevBytes -or $curBytes -lt $script:PrevBytes) { $delta = [int64]0 }
+    else { $delta = [int64]$curBytes - [int64]$script:PrevBytes }
+    $script:PrevBytes = $curBytes
+    $kbps = [int]([math]::Round(($delta * 8.0) / 1000.0 / $SampleSec))
+  }
+  $videoLike = ($kbps -ge $MinKbps)
 
-  # Inbound throughput = byte delta since last tick. A drop (counters reset because
-  # the session was recreated) just rebaselines without billing.
-  if ($null -eq $script:PrevBytes -or $curBytes -lt $script:PrevBytes) { $delta = [int64]0 }
-  else { $delta = [int64]$curBytes - [int64]$script:PrevBytes }
-  $script:PrevBytes = $curBytes
-  $kbps = [int]([math]::Round(($delta * 8.0) / 1000.0 / $SampleSec))
-
-  # DNS gate: did a YouTube-family name resolve since the last check? Update the
-  # last-resolution timestamp; the gate then stays open for DNS_GATE_MIN minutes.
+  # 2b) Harvest freshly-resolved YouTube-family IPs from the DNS ETW channel.
   $nowDt = Get-Date
   $since = $script:LastDnsCheck
   if (($nowDt - $since).TotalSeconds -gt 3600) { $since = $nowDt.AddSeconds(-($SampleSec + 5)) }
-  if (($DnsGateMin -gt 0) -and (Test-YbYouTubeDnsSince $since)) { $script:LastDnsEpoch = $now }
+  $resolved = Get-YbResolvedYtIps $since
   $script:LastDnsCheck = $nowDt
-  $gateOpen = ($DnsGateMin -le 0) -or (($script:LastDnsEpoch -gt 0) -and (($now - $script:LastDnsEpoch) -lt ($DnsGateMin * 60)))
-  $gateStr  = if ($DnsGateMin -le 0) { 'off' } elseif ($gateOpen) { 'open' } else { 'closed' }
 
-  # Fresh watching sample = video-like throughput to Google AND the gate open.
-  $fresh = ($kbps -ge $MinKbps) -and $gateOpen
-  if ($fresh) { $script:LastActiveEpoch = $now }
-  # window_sec smoothing: keep counting through brief dips, stop ~window_sec after end.
-  $active = ($script:LastActiveEpoch -gt 0) -and (($now - $script:LastActiveEpoch) -lt $WindowSec)
+  # 2c) Update the pin set: add/refresh resolved IPs; keep the actively-streaming set
+  #     alive; expire idle pins; cap to the 32 most-recently-active.
+  $pins = @(Read-YbPins)
+  $byIp = @{}
+  foreach ($p in $pins) { $byIp[$p.ip] = $p }
+  $newPins = @()
+  foreach ($ip in $resolved) {
+    if ($byIp.ContainsKey($ip)) { $byIp[$ip].last_active = $now }
+    else {
+      $pin = @{ ip = $ip; first_seen = $now; last_active = $now }
+      $byIp[$ip] = $pin; $pins += $pin; $newPins += $ip
+    }
+  }
+  # Keep-alive: if the metered set is actively streaming, refresh every loaded pin so a
+  # coalesced session (which stops re-resolving) does not expire mid-stream.
+  if ($videoLike) {
+    foreach ($ip in $script:MeteredIps) { if ($byIp.ContainsKey($ip)) { $byIp[$ip].last_active = $now } }
+  }
+  # Expire idle pins, then cap to the 32 most-recently-active (evict the oldest).
+  $pins = @($pins | Where-Object { ($now - [int]$_.last_active) -lt $PinIdleSec })
+  if ($pins.Count -gt $script:YbMaxFilters) {
+    $pins = @($pins | Sort-Object -Descending { [int]$_.last_active } | Select-Object -First $script:YbMaxFilters)
+  }
+  Write-YbPins $pins
 
-  # 3) ACCOUNT - only bill while watching AND not already budget-blocked.
+  # Log new pins (Google/GGC IPs, not PII); flag GGC/off-goog = what ranges missed.
+  foreach ($ip in $newPins) {
+    if (-not ($pins | Where-Object { $_.ip -eq $ip })) { continue }   # dropped by cap/expiry same tick
+    $tag = if (Test-YbIpInGoog $ip $script:GoogNets) { 'goog' } else { 'GGC/off-goog' }
+    Write-YbLog "[pin] +$ip ($tag) pins=$($pins.Count)"
+  }
+
+  # 2d) (Re)arm pktmon iff the metered IP set changed since it was last armed. Re-arming
+  #     resets the counters, so we rebaseline (bill 0 that tick); window_sec bridges it.
+  $desired = @($pins | ForEach-Object { [string]$_.ip } | Sort-Object)
+  if ((@($desired) -join ',') -ne (@($script:MeteredIps) -join ',')) {
+    if ($desired.Count -gt 0) {
+      if (-not (Initialize-YbPktmon $desired)) { Write-YbLog "[warn] pktmon re-arm failed for $($desired.Count) pinned IPs" }
+    } else {
+      Stop-YbPktmon
+    }
+    $script:MeteredIps = $desired
+    $script:PrevBytes  = $null
+  }
+
+  # 3) ACCOUNT - fresh watching = video-like throughput to the pinned IPs (the pin is
+  #    the disambiguator; no DNS gate). window_sec smoothing keeps counting through
+  #    brief dips and stops ~window_sec after streaming ends. Idle (no bytes) = +0s.
+  if ($videoLike) { $script:LastActive = $now }
+  $active = ($script:LastActive -gt 0) -and (($now - $script:LastActive) -lt $WindowSec)
   if ($active -and -not $st.blocked_by_budget) {
     $st.seconds_used = [int]$st.seconds_used + $SampleSec
   }
@@ -141,27 +190,27 @@ function Invoke-Tick {
   }
 
   Write-YbState $st
+  $pc = $pins.Count
   if ($active) {
-    Write-YbLog "[sample] active +${SampleSec}s used=$($st.seconds_used)s/${limit}s blocked=$($st.blocked_by_budget) kbps=$kbps gate=$gateStr"
+    Write-YbLog "[sample] active +${SampleSec}s used=$($st.seconds_used)s/${limit}s blocked=$($st.blocked_by_budget) kbps=$kbps pins=$pc"
   } elseif ($kbps -ge $MinKbps -and (($now - $script:LastIdleLog) -ge 60)) {
-    # Google bytes are flowing but not counted (gate closed, or after window end) -
-    # a rate-limited breadcrumb for tuning min_throughput_kbps / dns_gate_min.
+    # Bytes to pinned IPs but not counted (window elapsed) - a rate-limited breadcrumb.
     $script:LastIdleLog = $now
-    Write-YbLog "[idle] google kbps=$kbps gate=$gateStr (not counted) used=$($st.seconds_used)s/${limit}s"
+    Write-YbLog "[idle] kbps=$kbps pins=$pc (not counted; window elapsed) used=$($st.seconds_used)s/${limit}s"
   }
 }
 
 function Invoke-Main {
   Limit-YbLog
-  # Arm the byte meter + the real-time DNS gate before the loop.
-  $script:GoogRanges = Get-YbGoogRanges
-  $rangeCount = if ($script:GoogRanges) { @($script:GoogRanges).Count } else { 0 }
-  $pktmon = $false
-  if ($script:GoogRanges) { $pktmon = Initialize-YbPktmon $script:GoogRanges }
-  $dnsCh = Enable-YbDnsChannel
+  # Clear any stale pktmon session, arm the DNS source, load the GGC diagnostic set.
+  Stop-YbPktmon
+  $script:MeteredIps = @()
+  $script:PrevBytes  = $null
+  $dnsCh   = Enable-YbDnsChannel
+  $script:GoogNets = Get-YbGoogNets
   $script:LastDnsCheck = Get-Date
-  if ($pktmon) { Start-Sleep -Seconds 1; $script:PrevBytes = Get-YbGoogInboundBytes }   # baseline so tick 1 has a valid delta
-  Write-YbLog "[start] youtube-budget watcher (sample=${SampleSec}s window=${WindowSec}s limit=${DefLimit}m min_kbps=${MinKbps} dns_gate=${DnsGateMin}m ranges=$rangeCount pktmon=$pktmon dns_ch=$dnsCh hosts=$HostsPath)"
+  $pinCount = @(Read-YbPins).Count
+  Write-YbLog "[start] youtube-budget watcher (pinned-IP metering; sample=${SampleSec}s window=${WindowSec}s limit=${DefLimit}m min_kbps=${MinKbps} pin_idle_expire=$([int]$cfg.pin_idle_expire_min)m goog_nets=$(@($script:GoogNets).Count) pins=$pinCount dns_ch=$dnsCh hosts=$HostsPath)"
   while ($true) {
     try { Invoke-Tick } catch { Write-YbLog "[warn] tick failed (continuing): $_" }
     Start-Sleep -Seconds $SampleSec

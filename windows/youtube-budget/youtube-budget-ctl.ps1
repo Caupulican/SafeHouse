@@ -70,7 +70,7 @@ function Set-ConfigLimit([int]$min) {
     sample_sec          = [int]$cfg.sample_sec
     window_sec          = [int]$cfg.window_sec
     min_throughput_kbps = [int]$cfg.min_throughput_kbps
-    dns_gate_min        = [int]$cfg.dns_gate_min
+    pin_idle_expire_min = [int]$cfg.pin_idle_expire_min
   }
   $dir = Split-Path -Parent $script:YbConfigPath
   if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
