@@ -149,13 +149,21 @@ docker exec pihole pihole reloadlists
 ```
 
 ## Reboot behavior
-1. Log in → the `PiholeGPG-DNS` task wakes WSL, re-binds Pi-hole to the new WSL IP, points DNS at it.
+1. Log in → the `PiholeGPG-DNS` task wakes WSL, re-binds Pi-hole to the new WSL IP, and refreshes
+   the active adapter DNS plus the global Windows DNS Client NRPT rule.
 2. **Open Google Play Games *after* login** so the VM picks up Pi-hole.
-3. Check it ran: `Get-Content $env:USERPROFILE\.pihole\set-dns.log -Tail 3`
+3. Check it ran and the default Windows resolver is filtered:
+   ```powershell
+   Get-Content $env:USERPROFILE\.pihole\set-dns.log -Tail 3
+   Get-DnsClientNrptRule | Where-Object Comment -like 'SafeHouse:*'
+   Resolve-DnsName doubleclick.net -Type A   # -> 0.0.0.0
+   Resolve-DnsName example.com -Type A       # -> real addresses
+   ```
 
 ## Troubleshooting
-- **No internet after reboot:** the failsafe sets DNS to the router; check the log, ensure WSL/docker
-  started, then re-run the task: `Start-ScheduledTask -TaskName PiholeGPG-DNS`.
+- **No internet after reboot:** the failsafe targets both adapter DNS and the NRPT rule at the
+  auto-detected gateway; check the log, ensure WSL/docker started, then re-run the task:
+  `Start-ScheduledTask -TaskName PiholeGPG-DNS`.
 - **Container won't start:** `cd ~/pihole && docker compose logs --tail=50`. Usually a stale
   `PIHOLE_BIND_IP` in `.env`: fix it to `hostname -I`'s first IP and `docker compose up -d`.
 - **Dashboard unreachable from Windows:** TCP localhost forwarding → http://localhost:8053/admin.

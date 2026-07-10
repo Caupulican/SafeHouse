@@ -17,9 +17,11 @@ crosvm Android VM --DNS--> Windows host resolver --> Pi-hole    crosvm.exe (host
 ```
 
 - **Layer 1, Pi-hole (DNS).** Pi-hole runs in Docker inside WSL2, DNS bound to the WSL `eth0` IP
-  (`PIHOLE_BIND_IP`). The Windows Ethernet adapter's DNS points at it, and the crosvm VM NATs
-  through the host, so it inherits the host resolver. Ad domains resolve to `0.0.0.0`. This is
-  cheap and catches most ads.
+  (`PIHOLE_BIND_IP`). The active Windows adapter points at it, and a global NRPT rule routes the
+  Windows DNS Client to the same address even if the router advertises an IPv6 DNS server.
+  Chrome/Edge secure DNS is disabled by machine policy. The crosvm VM NATs through the host and
+  inherits the adapter resolver. Ad domains resolve to `0.0.0.0`. This is cheap and catches most
+  ads.
 - **Layer 2, Windows Firewall (connections).** Some ad SDKs never ask Pi-hole. They resolve ad
   hostnames over their own encrypted DNS (DoH), over QUIC (UDP 443), or reuse a cached IP, so no
   DNS query reaches Pi-hole. This layer blocks those by IP at the host firewall. See
@@ -68,6 +70,8 @@ catching ad servers after they rotate IPs. Full detail in [FIREWALL.md](FIREWALL
 WSL2 (NAT mode) hands out a **new eth0 IP** on most reboots, so:
 - the compose binds DNS via `${PIHOLE_BIND_IP}` (injected from `.env`), so the container always
   starts;
-- a **logon scheduled task** (`windows/`) wakes WSL, re-binds Pi-hole to the current IP, and points
-  the Ethernet adapter's DNS at it, with a **router failsafe** so the internet never breaks;
+- a **logon scheduled task** (`windows/`) wakes WSL, re-binds Pi-hole to the current IP, auto-detects
+  the active adapter/gateway, and refreshes both adapter DNS and the global NRPT rule;
+- if Pi-hole cannot answer, the task targets both resolver layers at the detected gateway as a
+  connectivity failsafe rather than leaving a stale WSL address;
 - the firewall rules (layer 2) persist across reboots on their own, no task needed.

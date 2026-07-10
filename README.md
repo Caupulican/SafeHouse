@@ -12,9 +12,11 @@ command (Ansible or a plain bash bootstrap).
 Google Play Games runs Android games inside a `crosvm` VM. Ads are blocked at two layers, neither
 of which touches the inside of the VM:
 
-1. **DNS (Pi-hole).** Cheap and catches most ads. The Windows host DNS points at Pi-hole, the VM
-   inherits it, and ad domains resolve to `0.0.0.0`. About 1.3M blocked domains plus regex rules
-   for named mobile-game ad networks. It also carries a **parental content layer**: a regex
+1. **DNS (Pi-hole).** Cheap and catches most ads. The Windows adapter points at Pi-hole and a
+   global NRPT rule forces the Windows DNS Client through it even when the router advertises an
+   IPv6 resolver; Chrome/Edge secure DNS is disabled by policy. The VM inherits the adapter DNS,
+   and ad domains resolve to `0.0.0.0`. About 1.3M blocked domains plus regex rules for named
+   mobile-game ad networks. It also carries a **parental content layer**: a regex
    denylist (`blocklists/parental-denylist.txt`, e.g. the YouTube family) plus **adult/NSFW**
    coverage pulled in via a referenced blocklist URL in `blocklists/adlists.txt` (a link, never
    domain literals in this public repo). The blocklists **auto-update weekly** (see below).
@@ -60,8 +62,8 @@ cd SafeHouse
 ```
 
 Both deploy Pi-hole, auto-detect the WSL IP, load all blocklists, rebuild gravity, and stage the
-Windows scripts to `C:\SafeHouse`. Then finish the admin steps (point DNS, arm the logon task, arm
-the firewall): see [windows/README.md](windows/README.md).
+Windows scripts to `C:\SafeHouse`. Then finish the admin steps (enforce DNS/NRPT, arm the logon
+task, arm the firewall): see [windows/README.md](windows/README.md).
 
 ## Layout
 

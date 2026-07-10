@@ -55,8 +55,8 @@ cat <<EOF
 [✓] Pi-hole is up:  http://localhost:8053/admin   (DNS on ${IP}:53)
 
 NEXT: one-time admin steps (see windows/README.md):
-  1) Point Windows DNS at Pi-hole (elevated PowerShell):
-       Set-DnsClientServerAddress -InterfaceAlias 'Ethernet' -ServerAddresses ${IP}
+  1) Enforce Windows DNS through Pi-hole (elevated PowerShell; auto-detects adapter/gateway):
+       powershell -ExecutionPolicy Bypass -File \$env:USERPROFILE\\.pihole\\set-dns.ps1
   2) Arm the reboot-proof logon task (elevated PowerShell):
        powershell -ExecutionPolicy Bypass -File C:\\Temp\\mktask.ps1
   3) Arm the connection-layer ad blocker (elevated PowerShell, with ads showing):

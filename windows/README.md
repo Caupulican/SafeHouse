@@ -7,31 +7,40 @@ by `bootstrap.sh` / the Ansible `windows_persistence` role:
 - `mktask.ps1`  → copied to `C:\Temp\mktask.ps1`
 
 ## 1. Point Windows DNS at Pi-hole (now)
+Run the staged persistence script once from an elevated PowerShell:
 ```powershell
-# <WSL-IP> = output of:  wsl hostname -I   (first address)
-Set-DnsClientServerAddress -InterfaceAlias 'Ethernet' -ServerAddresses <WSL-IP>
-ipconfig /flushdns
+powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\.pihole\set-dns.ps1
 ```
-Undo anytime: `Set-DnsClientServerAddress -InterfaceAlias 'Ethernet' -ResetServerAddresses`
+It auto-detects the active adapter, gateway, and current WSL address. It points the adapter at
+Pi-hole and installs a global Windows DNS Client NRPT rule so router-advertised IPv6 DNS cannot
+silently bypass Pi-hole. Chrome and Edge secure DNS are disabled by machine policy so those
+browsers stay on the enforced Windows resolver. If Pi-hole cannot answer, the script points both
+the adapter and NRPT rule at the detected gateway as an internet-preserving failsafe.
 
 ## 2. Arm the reboot-proof logon task
 ```powershell
 powershell -ExecutionPolicy Bypass -File C:\Temp\mktask.ps1
 ```
 This registers **`PiholeGPG-DNS`** (runs at logon, highest privileges). On each login it wakes WSL,
-re-binds Pi-hole to the current WSL IP, and points the Ethernet DNS at it (router failsafe if
-Pi-hole is down).
+re-binds Pi-hole to the current WSL IP, and refreshes the adapter DNS plus NRPT enforcement.
 
 Verify / test:
 ```powershell
 Get-ScheduledTask -TaskName PiholeGPG-DNS
 Start-ScheduledTask -TaskName PiholeGPG-DNS                       # simulate a reboot
-Get-DnsClientServerAddress -InterfaceAlias 'Ethernet'            # should show the WSL IP
+Get-DnsClientNrptRule | Where-Object Comment -like 'SafeHouse:*' # should name the WSL IP
+Resolve-DnsName doubleclick.net -Type A                           # should return 0.0.0.0
+Resolve-DnsName example.com -Type A                               # should return real addresses
 Get-Content $env:USERPROFILE\.pihole\set-dns.log -Tail 3
 ```
 Remove:
 ```powershell
 Unregister-ScheduledTask -TaskName PiholeGPG-DNS -Confirm:$false
+Get-DnsClientNrptRule | Where-Object Comment -eq 'SafeHouse: force Windows DNS Client through Pi-hole' |
+  Remove-DnsClientNrptRule -Force
+Get-NetIPConfiguration | Where-Object IPv4DefaultGateway | ForEach-Object {
+  Set-DnsClientServerAddress -InterfaceIndex $_.InterfaceIndex -ResetServerAddresses
+}
 ```
 
 ## 3. Arm the connection-layer ad blocker (firewall)
@@ -74,9 +83,10 @@ uncomment the `# --- YouTube family ---` regexes in `blocklists/parental-denylis
 
 ## 6. Arm the YouTube daily watch-time budget (auto, Windows-native)
 A fully automatic daily watch-time limiter for YouTube that runs as a **SYSTEM Scheduled
-Task** (no WSL/Pi-hole dependency). It measures watching via the Windows DNS cache, and once
-the daily budget is spent it auto-applies the same hosts block as §5; a date-based reset lifts
-it on the next day (correct even across shutdowns / days powered off). Staged to
+Task** (no WSL/Pi-hole dependency). It pins IPs resolved for YouTube-family names and meters
+streaming bytes with `pktmon`; once the daily budget is spent it auto-applies the same hosts
+block as §5. A date-based reset lifts it on the next day (correct even across shutdowns / days
+powered off). Staged to
 `C:\SafeHouse\windows\youtube-budget\`. **YouTube is allowed by default** — nothing blocks
 until you arm it. Run in an **elevated PowerShell** (it self-elevates via UAC):
 ```powershell
@@ -100,6 +110,6 @@ WSL host — `sudo systemctl disable --now safehouse-youtube-budget.service`. Fu
 [youtube-budget/README.md](youtube-budget/README.md).
 
 ## Notes
-- `set-dns.ps1` assumes the adapter is named **`Ethernet`** and a router failsafe of **`192.168.1.1`**.
-  Edit the two variables at the top if your machine differs.
+- `set-dns.ps1` contains no machine-specific interface, username, WSL path, or LAN gateway. It
+  discovers the active IPv4 default route at runtime.
 - The task runs as the logged-on user with highest privileges (no UAC prompt at logon).
