@@ -26,6 +26,18 @@ of which touches the inside of the VM:
    firewall rule blocks those ad servers and the VM cannot bypass it. See
    [docs/FIREWALL.md](docs/FIREWALL.md).
 
+Optionally, **AdGuard Home** chains in front of Pi-hole on `:53` (Pi-hole moves to `:5353`) to add
+the two things Pi-hole lacks: **per-client** policy and **time-of-day schedules**, plus a
+maintained one-click YouTube ruleset. The Windows adapter DNS and NRPT rule stay pointed at the
+same WSL IP, so nothing on the Windows side changes. See [docs/ADGUARD.md](docs/ADGUARD.md).
+
+> Any filtering resolver only filters the queries that reach it. Two bypasses on this machine
+> made the DNS layer decorative and are both now closed: **Avast Real Site (Secure DNS)**, which
+> resolved through its own DoH (Avast has since been removed), and **Opera GX**, whose built-in
+> VPN tunnels all browser traffic past every filter here — pinned off by
+> [`windows/opera-policy.ps1`](windows/opera-policy.ps1). See
+> [docs/ADGUARD.md](docs/ADGUARD.md#hard-prerequisite-close-the-doh-bypasses).
+
 > Key gotcha baked into this design: the crosvm VM reads host DNS only at launch and otherwise
 > uses its own encrypted DNS. After DNS is (re)pointed or firewall rules change, **Google Play
 > Games must be restarted** for the VM to pick it up. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -48,12 +60,17 @@ powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\safehouse-adblock.
 
 ## Quick start
 
-### Option A: Ansible (recommended)
+### One command, any machine
 ```bash
-cd SafeHouse/ansible
-sudo apt-get update && sudo apt-get install -y ansible   # one-time, if missing
-ansible-playbook -i inventory.ini playbook.yml
+cd SafeHouse
+./scripts/deploy.sh                 # Pi-hole only
+./scripts/deploy.sh --with-adguard  # AdGuard Home chained in front of Pi-hole
 ```
+
+Installs Ansible if missing, which installs Docker if missing, brings the stack up,
+auto-detects the WSL IP, generates a random Pi-hole admin password on first run
+(`~/pihole/.admin-password`), loads all blocklists, rebuilds gravity, installs the weekly
+auto-update and stages the Windows scripts to `C:\SafeHouse`. Safe to re-run.
 
 ### Option B: plain bash (no Ansible)
 ```bash
@@ -61,9 +78,8 @@ cd SafeHouse
 ./scripts/bootstrap.sh
 ```
 
-Both deploy Pi-hole, auto-detect the WSL IP, load all blocklists, rebuild gravity, and stage the
-Windows scripts to `C:\SafeHouse`. Then finish the admin steps (enforce DNS/NRPT, arm the logon
-task, arm the firewall): see [windows/README.md](windows/README.md).
+Then finish the admin steps, which need UAC and cannot be automated from WSL (enforce
+DNS/NRPT, arm the logon task, arm the firewall): see [windows/README.md](windows/README.md).
 
 ## Layout
 
@@ -77,12 +93,16 @@ SafeHouse/
   windows/        safehouse-adblock.ps1 (firewall), set-dns.ps1 + mktask.ps1 (DNS persistence),
                   parental-toggle.ps1 + parental-blocks/ (on-demand hosts-layer blocks),
                   youtube-budget/ (Windows-native daily YouTube watch-time budget + auto-block)
+  adguard/        docker-compose.yml + .env.example (optional, chained in front of Pi-hole)
   automation/     safehouse-autoupdate.{service,timer,cron} unit templates
   logs/           traffic.csv, auto-update.log (gitignored runtime logs)
-  scripts/        bootstrap.sh, load-blocklists.sh, export-config.sh,
-                  auto-update.sh, install-autoupdate.sh
-  ansible/        playbook.yml + roles (prereqs, pihole, tools, automation, windows_persistence)
-  docs/           ARCHITECTURE.md, RUNBOOK.md, FIREWALL.md
+  scripts/        deploy.sh (one-command install), bootstrap.sh, load-blocklists.sh,
+                  export-config.sh, auto-update.sh, install-autoupdate.sh
+  ansible/        playbook.yml + roles (prereqs, pihole, adguard, tools, automation,
+                  windows_persistence)
+  python/         Python port of the YouTube budget watcher (in progress, see
+                  docs/PYTHON-PORT.md) - not yet deployed
+  docs/           ARCHITECTURE.md, RUNBOOK.md, FIREWALL.md, ADGUARD.md, PYTHON-PORT.md
 ```
 
 ## Auto-update
