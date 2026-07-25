@@ -91,7 +91,19 @@ class Ticker:
 
         # Harvest resolutions since the last look, with a small overlap so an event
         # landing between two queries is not missed.
-        since = self._last_dns_epoch or (now - self.cfg.sample_sec * 2)
+        #
+        # On the FIRST tick reach back a full pin-expiry window instead. A watcher that
+        # has just started (or restarted) otherwise sees only the last few seconds of
+        # DNS and is effectively blind until the browser happens to re-resolve -- which,
+        # with QUIC coalescing, may not happen for an hour of continuous watching.
+        # Reaching further back than the expiry window would be pointless: those pins
+        # would be dropped as idle in the same tick.
+        first_look = self._last_dns_epoch == 0
+        since = (
+            now - self.cfg.pin_idle_expire_min * 60
+            if first_look
+            else self._last_dns_epoch
+        )
         resolved = self.platform.resolved_youtube_ips(since)
         self._last_dns_epoch = now
 

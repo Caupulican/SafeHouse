@@ -281,3 +281,28 @@ def test_shadow_mode_never_reconfigures_the_shared_meter(tmp_path):
     assert inner.metered == [], "shadow mode must not touch the shared pktmon session"
     assert not [c for c in inner.calls if c.startswith("set_metered_ips")]
     assert [a for a, _ in plat.suppressed if a == "set metered ips"]
+
+
+def test_first_tick_warms_up_from_the_pin_expiry_window(tmp_path):
+    """A restarted watcher must not be blind. With QUIC coalescing a browser may not
+    re-resolve for an hour of continuous watching, so a few seconds of DNS lookback
+    leaves it metering nothing."""
+    plat = FakePlatform()
+    cfg = Config(limit_min=180, sample_sec=20, pin_idle_expire_min=30)
+    t = Ticker(platform=plat, cfg=cfg, paths=Paths.under(tmp_path))
+    t.run()
+    first = [c for c in plat.calls if c.startswith("resolved_youtube_ips")][0]
+    since = int(first.split("since=")[1].rstrip(")"))
+    assert plat.now_epoch() - since == 30 * 60
+
+
+def test_later_ticks_only_look_back_to_the_previous_tick(tmp_path):
+    plat = FakePlatform()
+    t = Ticker(platform=plat, cfg=CFG, paths=Paths.under(tmp_path))
+    t.run()
+    plat.advance(SAMPLE)
+    plat.calls.clear()
+    t.run()
+    call = [c for c in plat.calls if c.startswith("resolved_youtube_ips")][0]
+    since = int(call.split("since=")[1].rstrip(")"))
+    assert plat.now_epoch() - since == SAMPLE

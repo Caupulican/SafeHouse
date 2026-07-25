@@ -234,8 +234,18 @@ class WindowsPlatform:
     # --- byte metering -------------------------------------------------------
 
     def inbound_bytes(self) -> int | None:
-        if not self._metered:
-            return None
+        """Read whatever counters session currently exists.
+
+        Deliberately NOT gated on this object having configured the session. In shadow
+        mode `set_metered_ips` is suppressed -- pktmon is one global session and
+        reconfiguring it would tear down the live watcher's filters -- so this object's
+        own `_metered` is empty while a perfectly good session is running. Gating here
+        made shadow mode read None forever, so it never accrued a second and the whole
+        comparison was vacuous.
+
+        The Ticker holds the guard that actually matters: it skips the read when *it*
+        has no pins.
+        """
         rc, out = _run([str(PKTMON), "counters", "--json"])
         if rc != 0:
             return None
