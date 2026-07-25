@@ -6,9 +6,12 @@ services:
     # DNS is bound to the WSL2 eth0 IP (PIHOLE_BIND_IP) to dodge the 10.255.255.254:53
     # WSL DNS-tunnel listener. The IP changes across reboots, so it is injected via .env
     # (bootstrap/ansible/logon-task auto-fill it). Web UI is published on all interfaces.
+    # PIHOLE_DNS_PORT defaults to 53 (Pi-hole is the only resolver). When AdGuard Home is
+    # chained in front of it (see docs/ADGUARD.md), set PIHOLE_DNS_PORT=5353 so AdGuard
+    # Home can own :53 and forward here. The container still listens on 53 internally.
     ports:
-      - "${PIHOLE_BIND_IP}:53:53/tcp"
-      - "${PIHOLE_BIND_IP}:53:53/udp"
+      - "${PIHOLE_BIND_IP}:${PIHOLE_DNS_PORT:-53}:53/tcp"
+      - "${PIHOLE_BIND_IP}:${PIHOLE_DNS_PORT:-53}:53/udp"
       - "${PIHOLE_WEB_PORT:-8053}:80/tcp"
     environment:
       TZ: "${PIHOLE_TZ:-America/Sao_Paulo}"
