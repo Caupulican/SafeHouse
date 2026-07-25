@@ -1,0 +1,63 @@
+{
+  "_comment": [
+    "Filter lists AdGuard Home should have enabled, applied by adguard/apply-filters.py.",
+    "This file is the source of truth; the running instance is reconciled to it.",
+    "",
+    "Chosen for ONE job above all: killing the advertising SDKs embedded in Android",
+    "games running in the Google Play Games crosvm VM. The generic 'AdGuard DNS filter'",
+    "alone left roughly 20% of in-game ads getting through.",
+    "",
+    "Deliberately NOT included: HaGeZi Pro++/Ultimate and 1Hosts Xtra. They block more,",
+    "but they over-block, and a game that will not start is a worse outcome than an ad -",
+    "it turns the parent against the whole system."
+  ],
+  "filters": [
+    {
+      "name": "AdGuard DNS filter",
+      "url": "https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt",
+      "why": "Baseline: AdGuard Base + Social + Tracking + Mobile Ads + EasyList/EasyPrivacy."
+    },
+    {
+      "name": "AWAvenue Ads Rule",
+      "url": "https://adguardteam.github.io/HostlistsRegistry/assets/filter_53.txt",
+      "why": "THE list for this problem. Targets advertising SDKs inside Android apps specifically, which is exactly what the games embed."
+    },
+    {
+      "name": "AdAway Default Blocklist",
+      "url": "https://adguardteam.github.io/HostlistsRegistry/assets/filter_2.txt",
+      "why": "Android hosts list. Was already present in AdGuard but shipped DISABLED, which is easy to miss."
+    },
+    {
+      "name": "Dandelion Sprout's Game Console Adblock List",
+      "url": "https://adguardteam.github.io/HostlistsRegistry/assets/filter_6.txt",
+      "why": "Ad endpoints specific to games rather than the web."
+    },
+    {
+      "name": "HaGeZi's Pro Blocklist",
+      "url": "https://adguardteam.github.io/HostlistsRegistry/assets/filter_48.txt",
+      "why": "Broad ads/tracking/telemetry. 'Pro', not Pro++ or Ultimate: those over-block and start breaking the games themselves."
+    },
+    {
+      "name": "Peter Lowe's Blocklist",
+      "url": "https://adguardteam.github.io/HostlistsRegistry/assets/filter_3.txt",
+      "why": "Small, old, very low false-positive rate. Cheap insurance."
+    },
+    {
+      "name": "HaGeZi's Encrypted DNS/VPN/TOR/Proxy Bypass",
+      "url": "https://adguardteam.github.io/HostlistsRegistry/assets/filter_52.txt",
+      "why": "Closes the hole that made the DNS layer decorative in the first place - Avast Secure DNS and Opera GX's VPN both resolved around it. Blocks known DoH/VPN/proxy endpoints, so a browser that ships its own resolver cannot reach it."
+    },
+    {
+      "name": "HaGeZi's Threat Intelligence Feeds",
+      "url": "https://adguardteam.github.io/HostlistsRegistry/assets/filter_44.txt",
+      "why": "Malware, phishing, scam. Child protection rather than ad blocking, and in-game ads are a common delivery route for exactly this."
+    }
+  ],
+  "known_false_positives": [
+    {
+      "host": "firebaseinstallations.googleapis.com",
+      "blocked_by": "Pi-hole (pre-existing, not these lists)",
+      "impact": "Firebase app-instance registration. Games have worked with it blocked, so it is left alone - but whitelist it here first if a game starts failing to launch or sign in."
+    }
+  ]
+}
