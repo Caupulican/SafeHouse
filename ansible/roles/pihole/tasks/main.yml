@@ -1,46 +1,81 @@
 ---
-- name: Ensure pihole dir exists
+- name: Ensure the pihole dir exists
   ansible.builtin.file:
     path: "{{ pihole_dir }}"
     state: directory
+    mode: "0750"
+
+# Generated once and reused on every later run, so re-running the playbook does not
+# change the admin password out from under the operator.
+- name: Resolve the admin password (generate and persist on first run)
+  ansible.builtin.set_fact:
+    pihole_password_effective: >-
+      {{ pihole_password if (pihole_password | length > 0)
+         else lookup('password', pihole_dir ~ '/.admin-password length=24 chars=ascii_letters,digits') }}
+  no_log: true
+
+- name: Lock down the persisted password file
+  ansible.builtin.file:
+    path: "{{ pihole_dir }}/.admin-password"
+    mode: "0600"
+    state: file
+  when: pihole_password | length == 0
 
 - name: Deploy docker-compose.yml
   ansible.builtin.copy:
     src: "{{ repo_dir }}/pihole/docker-compose.yml"
     dest: "{{ pihole_dir }}/docker-compose.yml"
+    mode: "0644"
 
-- name: Detect WSL eth0 IP
-  ansible.builtin.shell:
-    cmd: "hostname -I | cut -d' ' -f1"
-  register: wsl_ip
+- name: Detect the WSL eth0 IP
+  ansible.builtin.command: hostname -I
+  register: _ip
   changed_when: false
 
-- name: Render .env from example with the detected IP
-  ansible.builtin.shell:
-    cmd: "sed 's/^PIHOLE_BIND_IP=.*/PIHOLE_BIND_IP={{ wsl_ip.stdout }}/' '{{ repo_dir }}/pihole/.env.example' > '{{ pihole_dir }}/.env'"
-  changed_when: true
+- name: Set the detected IP
+  ansible.builtin.set_fact:
+    wsl_ip: "{{ _ip.stdout.split()[0] | default('') }}"
+
+- name: Fail early when no IP could be detected
+  ansible.builtin.fail:
+    msg: "Could not detect an eth0 IP from `hostname -I` -- Pi-hole would bind nowhere."
+  when: wsl_ip | length == 0
+
+- name: Render .env
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ pihole_dir }}/.env"
+    mode: "0600"
 
 - name: Start Pi-hole
   ansible.builtin.command:
     cmd: docker compose up -d
     chdir: "{{ pihole_dir }}"
-  changed_when: true
+  become: "{{ docker_become | default(false) }}"
+  register: _up
+  changed_when: >-
+    'Started' in _up.stderr or 'Created' in _up.stderr or 'Recreated' in _up.stderr
 
 - name: Wait until Pi-hole answers DNS
   ansible.builtin.command: "docker exec {{ pihole_container }} dig +short github.com @127.0.0.1"
+  become: "{{ docker_become | default(false) }}"
   register: _dns
   until: _dns.rc == 0 and (_dns.stdout | length) > 0
   retries: 40
   delay: 3
   changed_when: false
 
-- name: Load blocklists + rebuild gravity
+- name: Load blocklists and rebuild gravity
   ansible.builtin.command: "{{ repo_dir }}/scripts/load-blocklists.sh"
   environment:
     PIHOLE_CONTAINER: "{{ pihole_container }}"
-  changed_when: true
   register: _grav
+  changed_when: true
 
-- name: Gravity result
+- name: Pi-hole summary
   ansible.builtin.debug:
-    msg: "{{ _grav.stdout_lines[-1] | default('gravity done') }}"
+    msg:
+      - "Pi-hole DNS   : {{ wsl_ip }}:{{ pihole_dns_port }}"
+      - "Dashboard     : http://localhost:{{ pihole_web_port }}/admin"
+      - "Admin password: {{ 'as set in pihole_password' if pihole_password | length > 0 else pihole_dir ~ '/.admin-password' }}"
+      - "{{ _grav.stdout_lines[-1] | default('gravity done') }}"

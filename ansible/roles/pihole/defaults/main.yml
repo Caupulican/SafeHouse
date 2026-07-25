@@ -1,3 +1,16 @@
 ---
 pihole_dir: "{{ ansible_env.HOME }}/pihole"
 pihole_container: pihole
+pihole_web_port: 8053
+pihole_tz: "{{ safehouse_tz | default('America/Sao_Paulo') }}"
+pihole_upstreams: "{{ safehouse_upstreams_semicolon | default('1.1.1.1;1.0.0.1') }}"
+
+# 53 when Pi-hole is the only resolver; 5353 when AdGuard Home is chained in front and
+# needs to own :53. Derived from the same switch the adguard role reads, so the two
+# roles cannot disagree about the port.
+pihole_dns_port: "{{ 5353 if (safehouse_enable_adguard | default(false) | bool) else 53 }}"
+
+# Leave empty to generate a random admin password on first run and persist it to
+# {{ pihole_dir }}/.admin-password. Shipping a known default to "any machine" would put
+# the dashboard -- which can turn all filtering off -- behind a password everyone knows.
+pihole_password: ""

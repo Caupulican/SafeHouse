@@ -1,0 +1,71 @@
+---
+# Runs only when safehouse_enable_adguard is true (gated in playbook.yml).
+# Assumes the pihole role has already moved Pi-hole to :5353 and set `wsl_ip`.
+
+- name: Ensure the adguard dir exists
+  ansible.builtin.file:
+    path: "{{ adguard_dir }}"
+    state: directory
+    mode: "0750"
+
+- name: Deploy docker-compose.yml
+  ansible.builtin.copy:
+    src: "{{ repo_dir }}/adguard/docker-compose.yml"
+    dest: "{{ adguard_dir }}/docker-compose.yml"
+    mode: "0644"
+
+- name: Render .env
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ adguard_dir }}/.env"
+    mode: "0600"
+
+# Both want :53 on the same IP, so a Pi-hole still holding it makes AdGuard Home fail to
+# bind. Caught here with a clear message rather than as an opaque compose error.
+- name: Verify Pi-hole has released :53
+  ansible.builtin.shell: |
+    set -o pipefail
+    docker ps --format '{% raw %}{{.Names}}\t{{.Ports}}{% endraw %}' | grep -E '^{{ pihole_container }}\b' || true
+  args:
+    executable: /bin/bash
+  become: "{{ docker_become | default(false) }}"
+  register: _pihole_ports
+  changed_when: false
+
+- name: Fail when Pi-hole still holds :53
+  ansible.builtin.fail:
+    msg: >-
+      Pi-hole is still published on :53 ({{ _pihole_ports.stdout }}). AdGuard Home cannot
+      bind :53 on the same IP. Re-run with -e safehouse_enable_adguard=true so the pihole
+      role moves it to :5353 first.
+  when: "':53->' in _pihole_ports.stdout"
+
+- name: Start AdGuard Home
+  ansible.builtin.command:
+    cmd: docker compose up -d
+    chdir: "{{ adguard_dir }}"
+  become: "{{ docker_become | default(false) }}"
+  register: _up
+  changed_when: >-
+    'Started' in _up.stderr or 'Created' in _up.stderr or 'Recreated' in _up.stderr
+
+- name: Wait for the AdGuard Home web UI
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ adguard_web_port }}/"
+    status_code: [200, 302, 403]
+  register: _web
+  until: _web.status is defined and _web.status in [200, 302, 403]
+  retries: 30
+  delay: 2
+
+# The first-run wizard is interactive by design, so the chain is not live until it is
+# completed. Saying so explicitly beats leaving DNS half-configured and silently broken.
+- name: AdGuard Home next steps
+  ansible.builtin.debug:
+    msg:
+      - "AdGuard Home is up: http://localhost:{{ adguard_web_port }}"
+      - "FINISH THE WIZARD -- DNS is not chained until you do:"
+      - "  1. Listen interface: {{ wsl_ip }}, admin port {{ adguard_web_port }}"
+      - "  2. Upstream DNS servers: {{ wsl_ip }}:{{ adguard_upstream_port }}  (Pi-hole)"
+      - "  3. Parallel requests: OFF, so every query traverses Pi-hole"
+      - "Verify: dig @{{ wsl_ip }} doubleclick.net +short   -> 0.0.0.0"

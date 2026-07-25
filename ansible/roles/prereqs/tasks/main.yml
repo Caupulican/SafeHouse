@@ -1,26 +1,84 @@
 ---
-- name: Verify docker is installed
+# Make the machine able to run the stack, rather than merely checking that it can.
+# "Fire and forget on any machine" means a bare host has to end up working, so a missing
+# Docker is installed instead of being reported as a failure.
+
+- name: Check for docker
   ansible.builtin.command: docker --version
   register: _docker
   changed_when: false
-  failed_when: _docker.rc != 0
+  failed_when: false
 
-- name: Verify 'docker compose' plugin
+- name: Install docker
+  when: _docker.rc != 0
+  become: true
+  block:
+    - name: Fetch the docker convenience installer
+      ansible.builtin.get_url:
+        url: https://get.docker.com
+        dest: /tmp/get-docker.sh
+        mode: "0755"
+
+    - name: Run the docker installer
+      ansible.builtin.command: sh /tmp/get-docker.sh
+      changed_when: true
+
+    - name: Add {{ ansible_user_id }} to the docker group
+      ansible.builtin.user:
+        name: "{{ ansible_user_id }}"
+        groups: docker
+        append: true
+
+- name: Start the docker service
+  become: true
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+  failed_when: false
+
+# WSL2 without systemd has no service manager, so the above is best-effort and dockerd
+# is started directly instead. A no-op when the daemon is already up.
+- name: Start dockerd directly when there is no service manager (WSL without systemd)
+  become: true
+  ansible.builtin.shell: |
+    if docker info >/dev/null 2>&1; then exit 0; fi
+    nohup dockerd >/var/log/dockerd.log 2>&1 &
+    for _ in $(seq 1 30); do
+      docker info >/dev/null 2>&1 && exit 0
+      sleep 1
+    done
+    exit 1
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Verify the docker compose plugin
   ansible.builtin.command: docker compose version
   register: _compose
   changed_when: false
-  failed_when: _compose.rc != 0
 
-- name: Verify current user can reach the docker daemon
+# A fresh `usermod -aG docker` does not apply to the already-running session, so this
+# play may still be unable to reach the socket as this user. Detect that and route the
+# compose calls through become rather than failing with an opaque permission error.
+- name: Check whether this user can reach the docker socket
   ansible.builtin.command: docker ps
   register: _ps
   changed_when: false
-  failed_when: _ps.rc != 0
+  failed_when: false
+
+- name: Decide whether docker commands need become
+  ansible.builtin.set_fact:
+    docker_become: "{{ _ps.rc != 0 }}"
+
+- name: Note that a re-login is needed for the docker group to take effect
+  ansible.builtin.debug:
+    msg: >-
+      docker is installed and {{ ansible_user_id }} is in the 'docker' group, but this
+      session predates that change, so docker commands will use sudo for this run.
+      Restart the WSL distro (`wsl.exe --shutdown`) or log out and back in to drop it.
+  when: docker_become
 
 - name: Prereqs summary
   ansible.builtin.debug:
-    msg: "{{ _docker.stdout }} | {{ _compose.stdout }} | docker OK as {{ ansible_user_id }}"
-
-# If docker is missing, install it first:
-#   curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER
-#   (then restart the WSL distro:  wsl.exe --shutdown)
+    msg: "{{ _docker.stdout | default('docker installed this run') }} | {{ _compose.stdout }}"

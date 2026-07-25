@@ -1,10 +1,16 @@
 ---
-# SafeHouse: deploy the Pi-hole ad-block stack on this WSL2 machine.
-# Run:  ansible-playbook -i inventory.ini playbook.yml
+# SafeHouse: deploy the DNS filtering stack on this WSL2 machine.
 #
-# Linux/WSL/Pi-hole side is fully automated. The Windows admin steps
-# (point DNS, arm the logon task, arm the firewall blocker) need UAC and are printed at the end.
-- name: SafeHouse Pi-hole stack
+#   ansible-playbook -i inventory.ini playbook.yml
+#   ansible-playbook -i inventory.ini playbook.yml -e safehouse_enable_adguard=true
+#
+# Installs docker if missing, brings up Pi-hole (and optionally AdGuard Home chained in
+# front of it), loads the blocklists and installs the weekly auto-update.
+#
+# The Windows admin steps -- point the adapter DNS, arm the logon task, arm the firewall
+# blocker, arm the YouTube budget -- need UAC and cannot run from here. They are printed
+# at the end by the windows_persistence role.
+- name: SafeHouse DNS filtering stack
   hosts: local
   connection: local
   gather_facts: true
@@ -13,6 +19,8 @@
   roles:
     - prereqs
     - pihole
+    - role: adguard
+      when: safehouse_enable_adguard | default(false) | bool
     - tools
     - automation
     - windows_persistence
