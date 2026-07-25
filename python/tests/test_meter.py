@@ -174,3 +174,73 @@ def test_reset_clears_history():
     m.reset()
     assert m.is_watching() is False
     assert m.observe(total, SAMPLE) is None  # baseline re-established
+
+
+# --- high-water mark, not a decaying average ---------------------------------
+
+
+def test_a_dip_after_real_playback_keeps_the_clock_running():
+    """REGRESSION: this port originally used the rolling AVERAGE over the window.
+
+    That decays as idle samples accumulate, so a stream that dips - an ad break, a
+    buffer top-up, an already-buffered segment - fell under the threshold and stopped
+    the clock while playback continued. Compared against the PowerShell watcher on the
+    live machine over 45 minutes: 18 samples where it credited and this did not, zero
+    the other way. Entirely one-directional under-counting, i.e. the child was being
+    handed extra time.
+    """
+    m = meter()
+    m.observe(0, SAMPLE)
+    total = bytes_for(5000, SAMPLE)
+    m.observe(total, SAMPLE)          # one solid above-threshold sample
+    assert m.is_watching() is True
+
+    # Now a long run of near-zero samples, well inside the window. The average would
+    # have collapsed; the high-water mark holds.
+    for _ in range(WINDOW // SAMPLE - 2):
+        total += bytes_for(2, SAMPLE)
+        m.observe(total, SAMPLE)
+        assert m.is_watching() is True, "must stay active for the whole window"
+
+
+def test_the_clock_stops_once_the_window_elapses_without_activity():
+    m = meter()
+    m.observe(0, SAMPLE)
+    total = bytes_for(5000, SAMPLE)
+    m.observe(total, SAMPLE)
+    for _ in range(WINDOW // SAMPLE):
+        total += bytes_for(2, SAMPLE)
+        m.observe(total, SAMPLE)
+    assert m.is_watching() is False
+
+
+def test_never_active_without_an_above_threshold_sample():
+    """A trickle must never start the clock, however long it runs."""
+    m = meter()
+    total = 0
+    m.observe(total, SAMPLE)
+    for _ in range(100):
+        total += bytes_for(10, SAMPLE)
+        m.observe(total, SAMPLE)
+    assert m.is_watching() is False
+
+
+def test_each_active_sample_re_arms_the_window():
+    m = meter()
+    m.observe(0, SAMPLE)
+    total = 0
+    for _ in range(30):
+        total += bytes_for(5000, SAMPLE)
+        m.observe(total, SAMPLE)
+    assert m.is_watching() is True
+
+
+def test_skipped_samples_do_not_advance_the_idle_timer():
+    """An unusable reading is UNKNOWN. Letting it age out the window would stop the
+    clock on the strength of data we never had."""
+    m = meter()
+    m.observe(0, SAMPLE)
+    m.observe(bytes_for(5000, SAMPLE), SAMPLE)
+    for _ in range(WINDOW // SAMPLE + 5):
+        m.observe(None, SAMPLE)
+    assert m.is_watching() is True

@@ -29,6 +29,9 @@ class Meter:
 
     _prev: int | None = field(default=None, repr=False)
     _samples: deque[float] = field(default_factory=deque, repr=False)
+    # Seconds since the last sample that exceeded the threshold; None = never yet.
+    # This, not the rolling average, is what decides "watching" -- see is_watching().
+    _since_active: float | None = field(default=None, repr=False)
 
     @property
     def _capacity(self) -> int:
@@ -40,6 +43,7 @@ class Meter:
         restarts and a delta across that boundary is meaningless."""
         self._prev = None
         self._samples.clear()
+        self._since_active = None
 
     def observe(self, cumulative: int | None, elapsed_sec: float) -> float | None:
         """Feed one reading. Returns kbit/s for this sample, or None if it is unusable.
@@ -72,15 +76,36 @@ class Meter:
         self._samples.append(kbps)
         while len(self._samples) > self._capacity:
             self._samples.popleft()
+
+        # High-water mark, not a decaying average. See is_watching().
+        if kbps >= self.min_throughput_kbps:
+            self._since_active = 0.0
+        elif self._since_active is not None:
+            self._since_active += elapsed_sec
+
         return kbps
 
     def average_kbps(self) -> float:
+        """Mean over the window. Reported in the log for diagnostics; it does NOT decide
+        whether the child is watching."""
         if not self._samples:
             return 0.0
         return sum(self._samples) / len(self._samples)
 
     def is_watching(self) -> bool:
-        """True when sustained throughput over the window looks like video playback."""
-        if not self._samples:
+        """True while within `window_sec` of the last above-threshold sample.
+
+        A high-water mark, deliberately, matching the PowerShell watcher. An earlier
+        version of this port took the rolling *average* over the window instead, which
+        looks equivalent and is not: the average decays as idle samples accumulate, so a
+        stream that dips (an ad break, a buffer top-up, an already-buffered segment) fell
+        below the threshold and stopped the clock while playback continued.
+
+        The two were compared on the live machine over 45 minutes: 18 samples where
+        PowerShell credited and this did not, and zero the other way. Entirely
+        one-directional, i.e. the port was under-counting and handing the child extra
+        time -- the wrong direction to be wrong in for a parental control.
+        """
+        if self._since_active is None:
             return False
-        return self.average_kbps() >= self.min_throughput_kbps
+        return self._since_active < self.window_sec
