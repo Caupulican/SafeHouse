@@ -98,8 +98,18 @@ resolver, and a built-in free VPN that tunnels all browser traffic through Opera
 proxies — while that VPN is on, nothing in this repo sees the traffic at all.
 
 `windows/opera-policy.ps1` (run elevated) closes both under
-`HKLM\SOFTWARE\Policies\Opera Software\Opera`, which is out of reach of the browser's
-own settings UI:
+`HKLM\SOFTWARE\Policies\OperaSoftware\Opera`, which is out of reach of the browser's own
+settings UI.
+
+**Mind the key name.** It is `OperaSoftware` with **no space** — *not* the `Opera
+Software` that Opera uses for its install path, its profile directory and its own
+registry entries. Writing to the spaced key succeeds, looks correct in `regedit`, and has
+no effect whatsoever. Confirmed by finding the literal wide string
+`SOFTWARE\Policies\OperaSoftware\Opera` in `opera_browser.dll`, where the spaced form
+does not appear at all. The script writes both, so the correct one is always covered.
+
+All four policy names below were also confirmed present in that binary, so this build
+implements them rather than discarding them as unknown:
 
 | Policy | Effect |
 |---|---|

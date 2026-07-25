@@ -10,9 +10,19 @@ machine policies already set for Edge and Chrome. It ships two independent bypas
   2. Its own DNS-over-HTTPS resolver, which bypasses the Windows resolver and therefore
      the hosts-file YouTube block.
 
-Opera is Chromium-based and reads Chromium policies from
-HKLM\SOFTWARE\Policies\Opera Software\Opera. Being in HKLM, these are not reachable
-from the browser's own settings UI.
+Opera is Chromium-based and reads Chromium policies from the registry. The key is
+HKLM\SOFTWARE\Policies\OperaSoftware\Opera - "OperaSoftware" with NO SPACE, which is
+NOT the "Opera Software" used by its install paths and profile directory. Verified by
+finding the literal wide string "SOFTWARE\Policies\OperaSoftware\Opera" in
+opera_browser.dll; the spaced variant appears nowhere in the binary. Writing to the
+spaced key looks like it worked and does nothing at all.
+
+The spaced key is also written, harmlessly, in case another Opera build reads it.
+
+All four policy names below were confirmed present in opera_browser.dll, so this build
+implements them rather than ignoring them as unknown.
+
+Being in HKLM, none of this is reachable from the browser's own settings UI.
 
 Run elevated. Re-runnable.
 #>
@@ -30,15 +40,23 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administra
   return
 }
 
-$key = 'HKLM:\SOFTWARE\Policies\Opera Software\Opera'
+# The real one, per the string in opera_browser.dll. The spaced variant is a decoy that
+# matches the install/profile paths but is never read.
+$keys = @(
+  'HKLM:\SOFTWARE\Policies\OperaSoftware\Opera',
+  'HKLM:\SOFTWARE\Policies\Opera Software\Opera'
+)
 
 if ($Undo) {
-  if (Test-Path $key) { Remove-Item $key -Recurse -Force; Write-Host "Removed $key" }
-  else { Write-Host 'Nothing to undo.' }
+  $removed = $false
+  foreach ($k in $keys) {
+    if (Test-Path $k) { Remove-Item $k -Recurse -Force; Write-Host "Removed $k"; $removed = $true }
+  }
+  if (-not $removed) { Write-Host 'Nothing to undo.' }
   return
 }
 
-if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
+foreach ($k in $keys) { if (-not (Test-Path $k)) { New-Item -Path $k -Force | Out-Null } }
 
 # String policies.
 $strings = @{
@@ -49,10 +67,12 @@ $strings = @{
   # policy-pinned direct mode removes the mechanism it relies on.
   ProxyMode        = 'direct'
 }
-foreach ($n in $strings.Keys) {
-  New-ItemProperty -Path $key -Name $n -Value $strings[$n] -PropertyType String -Force | Out-Null
-  Write-Host ("  {0} = {1}" -f $n, $strings[$n])
+foreach ($k in $keys) {
+  foreach ($n in $strings.Keys) {
+    New-ItemProperty -Path $k -Name $n -Value $strings[$n] -PropertyType String -Force | Out-Null
+  }
 }
+foreach ($n in $strings.Keys) { Write-Host ("  {0} = {1}" -f $n, $strings[$n]) }
 
 # DWORD policies.
 $dwords = @{
@@ -62,13 +82,15 @@ $dwords = @{
   # parent, which is the other half of supervising an 8-year-old.
   IncognitoModeAvailability = 1
 }
-foreach ($n in $dwords.Keys) {
-  New-ItemProperty -Path $key -Name $n -Value $dwords[$n] -PropertyType DWord -Force | Out-Null
-  Write-Host ("  {0} = {1}" -f $n, $dwords[$n])
+foreach ($k in $keys) {
+  foreach ($n in $dwords.Keys) {
+    New-ItemProperty -Path $k -Name $n -Value $dwords[$n] -PropertyType DWord -Force | Out-Null
+  }
 }
+foreach ($n in $dwords.Keys) { Write-Host ("  {0} = {1}" -f $n, $dwords[$n]) }
 
 Write-Host ''
-Write-Host "Applied to $key" -ForegroundColor Green
+foreach ($k in $keys) { Write-Host ("Applied to {0}" -f $k) -ForegroundColor Green }
 Write-Host @"
 
   Verify:   open Opera GX -> opera://policy  (policies must be listed as applied)
