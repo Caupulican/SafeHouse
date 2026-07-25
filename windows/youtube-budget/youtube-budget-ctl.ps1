@@ -54,10 +54,10 @@ function Get-State {
   $today = Get-YbToday
   $st = Read-YbState
   if ($null -eq $st) {
-    $st = @{ date = $today; seconds_used = 0; limit_min = [int]$cfg.limit_min; bonus_sec = 0; blocked_by_budget = $false }
+    $st = @{ date = $today; seconds_used = 0; limit_min = [int]$cfg.limit_min; bonus_sec = 0; blocked_by_budget = $false; manual_block = $false }
   }
   if ($st.date -ne $today) {
-    $st.date = $today; $st.seconds_used = 0; $st.bonus_sec = 0; $st.blocked_by_budget = $false
+    $st.date = $today; $st.seconds_used = 0; $st.bonus_sec = 0; $st.blocked_by_budget = $false; $st.manual_block = $false
   }
   return $st
 }
@@ -85,12 +85,14 @@ switch ($Command) {
     $rem = $limit - [int]$st.seconds_used; if ($rem -lt 0) { $rem = 0 }
     $budget = if ($st.blocked_by_budget) { 'BLOCKED (budget)' } else { 'ALLOWED' }
     $hostsState = if (Test-YbHostsBlocked $HostsPath) { 'blocked' } else { 'allowed' }
+    $firewallState = if (Test-YbFirewallBlock) { 'blocked' } else { 'allowed' }
     Write-Host ("YouTube watch-time budget - {0}" -f $st.date)
     Write-Host ("  Used today : {0}" -f (Format-Hms ([int]$st.seconds_used)))
     Write-Host ("  Limit      : {0}  ({1}m daily + {2} bonus)" -f (Format-Hms $limit), $st.limit_min, (Format-Hms ([int]$st.bonus_sec)))
     Write-Host ("  Remaining  : {0}" -f (Format-Hms $rem))
     Write-Host ("  Budget     : {0}" -f $budget)
     Write-Host ("  Hosts file : YouTube section {0} in {1}" -f $hostsState, $HostsPath)
+    Write-Host ("  Firewall   : pinned YouTube endpoints {0}" -f $firewallState)
   }
 
   'set-limit' {
@@ -99,7 +101,7 @@ switch ($Command) {
     $st.limit_min = $Value
     Set-ConfigLimit $Value
     if ($st.blocked_by_budget -and ([int]$st.seconds_used -lt (Get-EffLimit $st))) {
-      Remove-YbHostsBlock $HostsPath 'auto' | Out-Null; Invoke-YbFlushDns; $st.blocked_by_budget = $false
+      Remove-YbHostsBlock $HostsPath 'auto' | Out-Null; Remove-YbFirewallBlock | Out-Null; Invoke-YbFlushDns; $st.blocked_by_budget = $false
       Write-Host 'Limit raised - budget freed, YouTube unblocked.'
     }
     Write-YbState $st
@@ -111,7 +113,7 @@ switch ($Command) {
     $st = Get-State
     $st.bonus_sec = [int]$st.bonus_sec + $Value * 60
     if ($st.blocked_by_budget -and ([int]$st.seconds_used -lt (Get-EffLimit $st))) {
-      Remove-YbHostsBlock $HostsPath 'auto' | Out-Null; Invoke-YbFlushDns; $st.blocked_by_budget = $false
+      Remove-YbHostsBlock $HostsPath 'auto' | Out-Null; Remove-YbFirewallBlock | Out-Null; Invoke-YbFlushDns; $st.blocked_by_budget = $false
       Write-Host ("Granted {0}m - budget freed, YouTube unblocked." -f $Value)
     } else {
       Write-Host ("Granted {0}m of bonus for today." -f $Value)
@@ -122,9 +124,12 @@ switch ($Command) {
   'block' {
     $st = Get-State
     $res = Add-YbHostsBlock $HostsPath
+    $fw = Add-YbFirewallBlock (Read-YbPins)
     switch -Wildcard ($res) {
-      'BLOCKED*' { $st.blocked_by_budget = $true; Invoke-YbFlushDns; Write-Host ("YouTube BLOCKED now ($res).") }
-      'ALREADY'  { $st.blocked_by_budget = $true; Write-Host 'YouTube already BLOCKED.' }
+      # manual_block marks this as a deliberate parent block so the watcher's reconcile
+      # will not lift it just because today's usage is under the limit.
+      'BLOCKED*' { $st.blocked_by_budget = $true; $st.manual_block = $true; Invoke-YbFlushDns; Write-Host ("YouTube BLOCKED now ($res; endpoint firewall=$fw).") }
+      'ALREADY'  { $st.blocked_by_budget = $true; $st.manual_block = $true; Invoke-YbFlushDns; Write-Host ("YouTube already BLOCKED (endpoint firewall=$fw).") }
       'NOLIST'   { Write-Error 'Cannot block - host list missing (parental-blocks\youtube.txt).'; return }
       default    { Write-Error "Block failed (out='$res')"; return }
     }
@@ -134,6 +139,7 @@ switch ($Command) {
   'allow' {
     $st = Get-State
     Remove-YbHostsBlock $HostsPath 'any' | Out-Null
+    Remove-YbFirewallBlock | Out-Null
     Invoke-YbFlushDns
     # Give one-sample headroom so a no-activity tick won't instantly re-arm; the
     # watcher re-blocks only when fresh watching crosses the limit again.
@@ -142,6 +148,7 @@ switch ($Command) {
       $st.bonus_sec = [int]$st.bonus_sec + ([int]$st.seconds_used - $limit) + [int]$cfg.sample_sec
     }
     $st.blocked_by_budget = $false
+    $st.manual_block = $false   # an explicit allow also clears a parent's manual block
     Write-YbState $st
     Write-Host 'YouTube ALLOWED now (override). Watcher re-blocks once today''s watching crosses the limit again.'
   }
@@ -150,8 +157,10 @@ switch ($Command) {
     $st = Get-State
     $st.seconds_used = 0; $st.bonus_sec = 0
     Remove-YbHostsBlock $HostsPath 'any' | Out-Null
+    Remove-YbFirewallBlock | Out-Null
     Invoke-YbFlushDns
     $st.blocked_by_budget = $false
+    $st.manual_block = $false
     Write-YbState $st
     Write-Host ("Reset - today's usage zeroed and YouTube unblocked (limit {0}m)." -f $st.limit_min)
   }

@@ -16,3 +16,22 @@ youtu.be
 music.youtube.com
 youtube-nocookie.com
 www.youtube-nocookie.com
+
+# YouTube Kids - a separate surface that the main youtube.com block does NOT cover.
+youtubekids.com
+www.youtubekids.com
+m.youtubekids.com
+
+# InnerTube / API endpoints. The YouTube PWA and the mobile-style clients talk to
+# these directly, so blocking only the www hostnames leaves an app-shaped hole.
+youtubei.googleapis.com
+youtube.googleapis.com
+
+# Short/alternate entry points.
+yt.be
+www.youtu.be
+
+# NOTE: the video segments themselves come from *.googlevideo.com with per-session
+# random subdomains (rr3---sn-....googlevideo.com). A hosts file cannot wildcard, so
+# that CDN is NOT blockable here - it is covered by the endpoint-firewall half of the
+# budget enforcement, and properly only by a filtering resolver (Pi-hole/AdGuard Home).

@@ -44,6 +44,7 @@ $script:YbYtNameRegex  = 'googlevideo|youtube|ytimg|ggpht|yt3'
 $script:YbBlockName   = 'YouTube'
 $script:YbStartMarker = '# === Parental block: YouTube (auto: daily budget) ==='
 $script:YbEndMarker   = '# === end YouTube block ==='
+$script:YbFirewallRule = 'SafeHouse: YouTube budget block'  # owns only the budget's endpoint block
 $script:YbUtf8NoBom   = New-Object System.Text.UTF8Encoding($false)
 
 # --- hosts path (override with $env:YB_HOSTS for testing on a copy) ----------
@@ -98,7 +99,7 @@ function Get-YbToday { (Get-Date).ToString('yyyy-MM-dd') }
 #                          by DNS recency, so a coalesced QUIC session that stops
 #                          re-resolving stays metered for as long as it streams.
 function Get-YbConfig {
-  $cfg = @{ limit_min = 60; sample_sec = 20; window_sec = 240; min_throughput_kbps = 64; pin_idle_expire_min = 30 }
+  $cfg = @{ limit_min = 180; sample_sec = 20; window_sec = 240; min_throughput_kbps = 64; pin_idle_expire_min = 30 }
   $paths = @($script:YbConfigPath, (Join-Path $script:YbScriptDir 'config.json'))
   foreach ($p in $paths) {
     if ($p -and (Test-Path $p)) {
@@ -133,6 +134,11 @@ function Read-YbState {
     limit_min         = [int]$o.limit_min
     bonus_sec         = [int]$o.bonus_sec
     blocked_by_budget = [bool]$o.blocked_by_budget
+    # Parent forced the block on via `ctl block`. Distinct from blocked_by_budget so
+    # the watcher's declarative reconcile does not lift a deliberate manual block when
+    # the day's usage happens to sit under the limit. Absent in pre-existing state
+    # files -> $false, which is the correct default.
+    manual_block      = [bool]$o.manual_block
   }
 }
 
@@ -146,6 +152,7 @@ function Write-YbState($State) {
     limit_min         = [int]$State.limit_min
     bonus_sec         = [int]$State.bonus_sec
     blocked_by_budget = [bool]$State.blocked_by_budget
+    manual_block      = [bool]$State.manual_block
   }
   $json = ($obj | ConvertTo-Json)
   $tmp  = Join-Path $dir ('.ybstate.' + [System.IO.Path]::GetRandomFileName())
@@ -205,6 +212,44 @@ function Remove-YbHostsBlock([string]$HostsPath, [string]$Scope = 'auto') {
   if ($new -eq $raw) { return 'NONE' }
   [System.IO.File]::WriteAllText($HostsPath, $new, $script:YbUtf8NoBom)
   return 'UNBLOCKED'
+}
+
+# --- endpoint firewall enforcement -------------------------------------------
+# Hosts/DNS blocking prevents new lookups but cannot terminate an already-open QUIC
+# stream. While the budget block is active, also block the exact YouTube endpoints
+# previously pinned by the detector. The rule is SafeHouse-owned and removed on reset.
+function Test-YbFirewallBlock {
+  try { return @((Get-NetFirewallRule -DisplayName $script:YbFirewallRule -ErrorAction SilentlyContinue)).Count -gt 0 }
+  catch { return $false }
+}
+
+function Remove-YbFirewallBlock {
+  try {
+    $rules = @(Get-NetFirewallRule -DisplayName $script:YbFirewallRule -ErrorAction SilentlyContinue)
+    if ($rules.Count -eq 0) { return 'NONE' }
+    $rules | Remove-NetFirewallRule | Out-Null
+    return 'UNBLOCKED'
+  } catch { return 'ERROR' }
+}
+
+# Returns BLOCKED:<n> | NOIPS | ERROR. $Pins is the persisted resolved-IP pin set.
+function Add-YbFirewallBlock($Pins) {
+  $ips = @()
+  foreach ($p in @($Pins)) {
+    $candidate = [string]$p.ip
+    $parsed = [System.Net.IPAddress]::Any
+    if ([System.Net.IPAddress]::TryParse($candidate, [ref]$parsed)) { $ips += $parsed.ToString() }
+  }
+  $ips = @($ips | Select-Object -Unique)
+  if ($ips.Count -eq 0) { return 'NOIPS' }
+  try {
+    $null = Remove-YbFirewallBlock
+    foreach ($direction in @('Outbound', 'Inbound')) {
+      New-NetFirewallRule -DisplayName $script:YbFirewallRule -Direction $direction -Action Block `
+        -RemoteAddress $ips -Protocol Any -Profile Any -Enabled True | Out-Null
+    }
+    return ('BLOCKED:{0}' -f $ips.Count)
+  } catch { return 'ERROR' }
 }
 
 # --- DNS flush (best-effort) -------------------------------------------------

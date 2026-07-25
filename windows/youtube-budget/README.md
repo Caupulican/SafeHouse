@@ -74,8 +74,11 @@ each tick does, in order:
    and `[pin]` lines record each new pinned IP (flagged `goog` or `GGC/off-goog`) so the
    mechanism can be audited from the world-readable log.
 
-4. **Enforce.** Effective limit = `limit_min*60 + bonus_sec` (default limit **60 min**).
-   When `seconds_used >= limit` and not yet blocked, splice
+4. **Enforce.** Effective limit = `limit_min*60 + bonus_sec` (default limit **180 min**).
+   Enforcement is **reconciled on every tick**, not latched on the transition: while
+   `seconds_used >= limit`, each tick re-checks that the block is actually present and
+   re-applies it if something removed it (logged as `[reblock]`). Conversely, once under
+   the limit again, an auto block is lifted. To block, splice
 
    ```
    # === Parental block: YouTube (auto: daily budget) ===
@@ -86,7 +89,9 @@ each tick does, in order:
 
    into the hosts file — **byte-preserving** (the mixed CRLF header / LF body is left
    untouched; same algorithm as `windows\parental-toggle.ps1`) — set `blocked_by_budget`,
-   and flush DNS (`ipconfig /flushdns`). The next day's reset removes it again.
+   and flush DNS (`ipconfig /flushdns`). It also adds SafeHouse-owned inbound and outbound
+   Windows Firewall rules for the pinned YouTube endpoints, which stop a pre-existing QUIC
+   stream that a hosts/DNS change cannot terminate. The next day's reset removes both blocks again.
 
 It shares the **block host list** with the manual toggle and never double-inserts: if a
 `# === Parental block: YouTube ... ===` section already exists (manual or auto), it leaves
@@ -133,7 +138,7 @@ to guide it.
   written atomically each tick.
 - **Config:** `C:\ProgramData\SafeHouse\config.json` =
   `{ limit_min, sample_sec, window_sec, min_throughput_kbps, pin_idle_expire_min }`
-  (defaults 60 / 20 / 240 / 64 / 30). `limit_min` and `bonus_sec` take effect live each tick;
+  (defaults 180 / 20 / 240 / 64 / 30). `limit_min` and `bonus_sec` take effect live each tick;
   changing `sample_sec`, `window_sec`, `min_throughput_kbps`, or `pin_idle_expire_min` needs
   the task restarted (`Stop-ScheduledTask` / `Start-ScheduledTask -TaskName
   SafeHouse-YouTubeBudget`, or a reboot).

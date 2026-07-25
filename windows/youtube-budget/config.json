@@ -1,5 +1,5 @@
 {
-  "limit_min": 60,
+  "limit_min": 180,
   "sample_sec": 20,
   "window_sec": 240,
   "min_throughput_kbps": 64,

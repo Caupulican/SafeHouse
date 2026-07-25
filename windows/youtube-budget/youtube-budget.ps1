@@ -29,9 +29,13 @@ it does, in order:
 
   3. ACCOUNT - if active and not already blocked, add sample_sec to seconds_used.
 
-  4. ENFORCE - limit = limit_min*60 + bonus_sec (default limit 60 min). When
-     seconds_used >= limit and not blocked, splice the YouTube hosts block in
-     (shared list ..\parental-blocks\youtube.txt), set blocked_by_budget, flush DNS.
+  4. ENFORCE - limit = limit_min*60 + bonus_sec (default limit 180 min). While
+     seconds_used >= limit, RECONCILE on every sample: verify the YouTube hosts block
+     (shared list ..\parental-blocks\youtube.txt) is physically present and re-apply it
+     if something removed it, keep the pinned endpoints blocked in Windows Firewall
+     (refreshed as new IPs are pinned, to stop existing/new QUIC streams), and flush DNS
+     on each (re)application. Enforcement is declarative, not a one-shot transition:
+     removing the block by hand does not buy the rest of the day.
 
 Resilient: a transient error in a tick is logged and the loop continues; an
 unreadable pktmon session is re-armed and the sample skipped (no phantom accounting).
@@ -65,6 +69,7 @@ $script:MeteredIps   = @()        # IPs currently loaded as pktmon filters (sort
 $script:LastDnsCheck = Get-Date   # high-water mark for the DNS harvest query
 $script:GoogNets     = @()        # published prefixes, for GGC-vs-goog diagnostics only
 $script:LastIdleLog  = 0          # rate-limit for the [idle] diagnostic line
+$script:FwIps        = @()        # IPs currently in the endpoint firewall rule (sorted)
 
 function Get-NowEpoch { [int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
 
@@ -75,7 +80,7 @@ function Invoke-Tick {
   # Load or initialise state.
   $st = Read-YbState
   if ($null -eq $st) {
-    $st = @{ date = $today; seconds_used = 0; limit_min = $DefLimit; bonus_sec = 0; blocked_by_budget = $false }
+    $st = @{ date = $today; seconds_used = 0; limit_min = $DefLimit; bonus_sec = 0; blocked_by_budget = $false; manual_block = $false }
     Write-YbState $st
     Write-YbLog "[init] created state $($script:YbStatePath) (limit=$($st.limit_min)m)"
   }
@@ -83,12 +88,29 @@ function Invoke-Tick {
   # 1) DATE-BASED IDEMPOTENT RESET (survives shutdowns / multi-day-off).
   if ($st.date -ne $today) {
     $res = Remove-YbHostsBlock $HostsPath 'auto'
-    if ($res -eq 'UNBLOCKED') { Invoke-YbFlushDns }
-    Write-YbLog "[reset] new day $today (was $($st.date)) - usage zeroed; auto block: $res"
+    $fw  = Remove-YbFirewallBlock
+    if ($res -eq 'UNBLOCKED' -or $fw -eq 'UNBLOCKED') { Invoke-YbFlushDns }
+    Write-YbLog "[reset] new day $today (was $($st.date)) - usage zeroed; auto block: $res; endpoint firewall: $fw"
+    $script:FwIps = @()
     $st.date = $today
     $st.seconds_used = 0
     $st.bonus_sec = 0
     $st.blocked_by_budget = $false
+    $st.manual_block = $false
+    Write-YbState $st
+  }
+
+  # 1b) LIVE LIMIT REFRESH - config.json is AUTHORITATIVE for the daily limit.
+  # Both ways of changing it converge on that file: the installer renders .env into it,
+  # and `youtube-budget-ctl.ps1 set-limit` writes it as well as the state. Without this
+  # re-read, state.limit_min stays frozen at whatever it was when the state file was
+  # first created, and editing .env/config.json silently does nothing.
+  # Only limit_min is refreshed live; sample/window/throughput shape the loop itself and
+  # remain startup-only (documented as needing a task restart).
+  $liveLimit = [int](Get-YbConfig).limit_min
+  if ($liveLimit -ne [int]$st.limit_min) {
+    Write-YbLog "[config] daily limit $($st.limit_min)m -> ${liveLimit}m (from $($script:YbConfigPath))"
+    $st.limit_min = $liveLimit
     Write-YbState $st
   }
 
@@ -177,16 +199,58 @@ function Invoke-Tick {
     $st.seconds_used = [int]$st.seconds_used + $SampleSec
   }
 
-  # 4) ENFORCE.
+  # 4) ENFORCE - RECONCILE ON EVERY TICK while over budget.
+  #    This used to fire only on the false->true transition, so once blocked_by_budget
+  #    latched, ANYTHING that later removed the hosts section (a manual edit, another
+  #    tool rewriting hosts, an installer restoring a backup) left YouTube open for the
+  #    rest of the day while the log kept reporting blocked=True. Enforcement is now
+  #    declarative: while over budget, every sample re-verifies that the block is
+  #    PHYSICALLY present and re-applies it if it is not, and refreshes the endpoint
+  #    firewall whenever the pinned set has changed - so IPs first resolved AFTER the
+  #    block went on are covered too (the old one-shot snapshot never grew).
   $limit = [int]$st.limit_min * 60 + [int]$st.bonus_sec
-  if (($st.seconds_used -ge $limit) -and -not $st.blocked_by_budget) {
-    $res = Add-YbHostsBlock $HostsPath
-    switch -Wildcard ($res) {
-      'BLOCKED*' { $st.blocked_by_budget = $true; Invoke-YbFlushDns; Write-YbLog "[enforce] budget reached ($($st.seconds_used)s >= ${limit}s) - YouTube BLOCKED ($res)" }
-      'ALREADY'  { $st.blocked_by_budget = $true; Write-YbLog "[enforce] budget reached - YouTube already blocked (ALREADY)" }
-      'NOLIST'   { Write-YbLog "[error] enforcement host list missing (parental-blocks\youtube.txt) - cannot block" }
-      default    { Write-YbLog "[error] hosts block failed (out='$res')" }
+  if ($st.seconds_used -ge $limit) {
+    $wasBlocked = [bool]$st.blocked_by_budget
+
+    if (-not (Test-YbHostsBlocked $HostsPath)) {
+      $res = Add-YbHostsBlock $HostsPath
+      switch -Wildcard ($res) {
+        'BLOCKED*' {
+          $st.blocked_by_budget = $true
+          Invoke-YbFlushDns
+          if ($wasBlocked) { Write-YbLog "[reblock] hosts block had been removed - re-applied ($res)" }
+          else             { Write-YbLog "[enforce] budget reached ($($st.seconds_used)s >= ${limit}s) - YouTube BLOCKED ($res)" }
+        }
+        'NOLIST' { Write-YbLog '[error] enforcement host list missing (parental-blocks\youtube.txt)' }
+        default  { Write-YbLog "[error] hosts block failed (out='$res')" }
+      }
+    } elseif (-not $wasBlocked) {
+      $st.blocked_by_budget = $true
+      Invoke-YbFlushDns
+      Write-YbLog "[enforce] budget reached ($($st.seconds_used)s >= ${limit}s) - YouTube already blocked"
     }
+
+    # Endpoint firewall: (re)apply when it is missing OR the pin set has moved on.
+    # Skip entirely with no pins - there is nothing to block, and retrying would log
+    # NOIPS on every single sample.
+    $fwIps = @($pins | ForEach-Object { [string]$_.ip } | Sort-Object)
+    if ($fwIps.Count -gt 0 -and ((-not (Test-YbFirewallBlock)) -or ((@($fwIps) -join ',') -ne (@($script:FwIps) -join ',')))) {
+      $fw = Add-YbFirewallBlock $pins
+      $script:FwIps = $fwIps
+      Write-YbLog "[enforce] endpoint firewall refreshed ($fw)"
+    }
+  }
+  elseif ($st.blocked_by_budget -and -not $st.manual_block) {
+    # UNDER budget but still blocked - the other half of a declarative reconcile.
+    # Happens when the parent raises the limit or grants bonus minutes: the budget is
+    # no longer spent, so the auto block must lift on its own rather than waiting for
+    # midnight. A parent's deliberate `ctl block` sets manual_block and is left alone.
+    $res = Remove-YbHostsBlock $HostsPath 'auto'
+    $fw  = Remove-YbFirewallBlock
+    $st.blocked_by_budget = $false
+    $script:FwIps = @()
+    if ($res -eq 'UNBLOCKED' -or $fw -eq 'UNBLOCKED') { Invoke-YbFlushDns }
+    Write-YbLog "[unblock] under budget again ($($st.seconds_used)s < ${limit}s) - auto block lifted (hosts=$res; endpoint firewall=$fw)"
   }
 
   Write-YbState $st
@@ -206,6 +270,9 @@ function Invoke-Main {
   Stop-YbPktmon
   $script:MeteredIps = @()
   $script:PrevBytes  = $null
+  # Unknown until the first reconcile; leaving it empty forces one firewall refresh
+  # on the first over-budget tick after a restart (the rule may be stale or gone).
+  $script:FwIps      = @()
   $dnsCh   = Enable-YbDnsChannel
   $script:GoogNets = Get-YbGoogNets
   $script:LastDnsCheck = Get-Date

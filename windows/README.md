@@ -84,8 +84,9 @@ uncomment the `# --- YouTube family ---` regexes in `blocklists/parental-denylis
 ## 6. Arm the YouTube daily watch-time budget (auto, Windows-native)
 A fully automatic daily watch-time limiter for YouTube that runs as a **SYSTEM Scheduled
 Task** (no WSL/Pi-hole dependency). It pins IPs resolved for YouTube-family names and meters
-streaming bytes with `pktmon`; once the daily budget is spent it auto-applies the same hosts
-block as §5. A date-based reset lifts it on the next day (correct even across shutdowns / days
+streaming bytes with `pktmon`; once the daily budget is spent it applies the same hosts
+block as §5 plus an endpoint firewall block that interrupts existing streams. A date-based reset
+lifts both on the next day (correct even across shutdowns / days
 powered off). Staged to
 `C:\SafeHouse\windows\youtube-budget\`. **YouTube is allowed by default** — nothing blocks
 until you arm it. Run in an **elevated PowerShell** (it self-elevates via UAC):
@@ -95,7 +96,7 @@ powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\youtube-budget\ins
 ```
 It creates `C:\ProgramData\SafeHouse` with a locked-down ACL (SYSTEM + Administrators full,
 **Users read-only**, so a standard user can read but not reset the budget), seeds `config.json`
-(limit 60 min / sample 20 s / window 240 s), and registers the task.
+(limit 30 min / sample 20 s / window 240 s), and registers the task.
 ```powershell
 $ctl = 'C:\SafeHouse\windows\youtube-budget\youtube-budget-ctl.ps1'
 powershell -ExecutionPolicy Bypass -File $ctl status        # used / remaining / limit / blocked today
