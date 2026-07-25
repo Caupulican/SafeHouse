@@ -44,9 +44,9 @@ Append the URL to `blocklists/adlists.txt`, then `./scripts/load-blocklists.sh`.
 - **YouTube — on-demand, per-machine (hosts layer):** YouTube is **allowed by default**. To block it
   on the Windows machine on demand, run (elevated PowerShell, self-elevates):
   ```powershell
-  powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\parental-toggle.ps1 -Name youtube -Block   # apply
-  powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\parental-toggle.ps1 -Name youtube -Allow   # remove
-  powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\parental-toggle.ps1 -Name youtube          # status
+  powershell -ExecutionPolicy Bypass -File C:\SafeHouse\python -m safehouse_setup toggle -Name youtube -Block   # apply
+  powershell -ExecutionPolicy Bypass -File C:\SafeHouse\python -m safehouse_setup toggle -Name youtube -Allow   # remove
+  powershell -ExecutionPolicy Bypass -File C:\SafeHouse\python -m safehouse_setup toggle -Name youtube          # status
   ```
   It edits the live hosts file (idempotent, byte-preserving), flushes DNS, and reads its host list from
   `windows/parental-blocks/youtube.txt`. See [../windows/README.md](../windows/README.md) §5.

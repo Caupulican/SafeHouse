@@ -3,13 +3,13 @@
 WSL can't elevate itself, so these two one-time steps are done by **you** in an **elevated
 PowerShell** (Right-click Start → *Terminal (Admin)*). The scripts here are staged automatically
 by `bootstrap.sh` / the Ansible `windows_persistence` role:
-- `set-dns.ps1` → copied to `%USERPROFILE%\.pihole\set-dns.ps1`
-- `mktask.ps1`  → copied to `C:\Temp\mktask.ps1`
+- `safehouse_setup dns` → copied to `%USERPROFILE%\.pihole\safehouse_setup dns`
+- `safehouse_setup persist`  → copied to `C:\Temp\safehouse_setup persist`
 
 ## 1. Point Windows DNS at Pi-hole (now)
 Run the staged persistence script once from an elevated PowerShell:
 ```powershell
-powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\.pihole\set-dns.ps1
+powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\.pihole\safehouse_setup dns
 ```
 It auto-detects the active adapter, gateway, and current WSL address. It points the adapter at
 Pi-hole and installs a global Windows DNS Client NRPT rule so router-advertised IPv6 DNS cannot
@@ -19,7 +19,7 @@ the adapter and NRPT rule at the detected gateway as an internet-preserving fail
 
 ## 2. Arm the reboot-proof logon task
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\Temp\mktask.ps1
+powershell -ExecutionPolicy Bypass -File C:\Temp\safehouse_setup persist
 ```
 This registers **`PiholeGPG-DNS`** (runs at logon, highest privileges). On each login it wakes WSL,
 re-binds Pi-hole to the current WSL IP, and refreshes the adapter DNS plus NRPT enforcement.
@@ -59,17 +59,17 @@ The crosvm VM reads DNS only at launch, so fully quit it (tray, Quit) and reopen
 Pi-hole and drops cached ad IPs.
 
 ## 5. Toggle the YouTube parental block (on demand)
-`parental-toggle.ps1` applies or removes a named parental block in the **live Windows hosts file**
-on demand. It is staged to `C:\SafeHouse\windows\parental-toggle.ps1` with its source host list at
+`safehouse_setup toggle` applies or removes a named parental block in the **live Windows hosts file**
+on demand. It is staged to `C:\SafeHouse\python -m safehouse_setup toggle` with its source host list at
 `C:\SafeHouse\windows\parental-blocks\youtube.txt`. **YouTube is allowed by default** — the block is
 only applied when you run it with `-Block`.
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\parental-toggle.ps1 -Name youtube -Block   # apply
-powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\parental-toggle.ps1 -Name youtube -Allow   # remove
-powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\parental-toggle.ps1 -Name youtube          # status
+powershell -ExecutionPolicy Bypass -File C:\SafeHouse\python -m safehouse_setup toggle -Name youtube -Block   # apply
+powershell -ExecutionPolicy Bypass -File C:\SafeHouse\python -m safehouse_setup toggle -Name youtube -Allow   # remove
+powershell -ExecutionPolicy Bypass -File C:\SafeHouse\python -m safehouse_setup toggle -Name youtube          # status
 ```
 - **Self-elevates** via UAC for `-Block`/`-Allow` (status needs no elevation).
-- `-Block` appends a `# === Parental block: YouTube (toggled via parental-toggle.ps1) ===` … `# === end
+- `-Block` appends a `# === Parental block: YouTube (toggled via safehouse_setup toggle) ===` … `# === end
   YouTube block ===` section (one `0.0.0.0 <host>` line per host from `parental-blocks\youtube.txt`).
   Idempotent — re-running does not duplicate it. `-Allow` removes that section. Both are byte-preserving:
   the script splices only its own section and leaves every other line (and the file's mixed CRLF/LF
@@ -112,6 +112,6 @@ WSL host — `sudo systemctl disable --now safehouse-youtube-budget.service`. Fu
 [youtube-budget/README.md](youtube-budget/README.md).
 
 ## Notes
-- `set-dns.ps1` contains no machine-specific interface, username, WSL path, or LAN gateway. It
+- `safehouse_setup dns` contains no machine-specific interface, username, WSL path, or LAN gateway. It
   discovers the active IPv4 default route at runtime.
 - The task runs as the logged-on user with highest privileges (no UAC prompt at logon).

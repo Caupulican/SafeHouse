@@ -14,7 +14,7 @@
 
 # --- YouTube family (DISABLED — currently allowed; uncomment + run ../scripts/load-blocklists.sh to block at the Pi-hole/network layer) ---
 # These lines are commented out, so load-blocklists.sh skips them and nothing is
-# blocked by default. They mirror the hosts-layer toggle (windows/parental-toggle.ps1
+# blocked by default. They mirror the hosts-layer toggle (safehouse_setup toggle
 # -Name youtube). To block YouTube network-wide instead of per-machine, remove the
 # leading '# ' from each regex below and run ../scripts/load-blocklists.sh.
 # (^|\.)youtube\.com$

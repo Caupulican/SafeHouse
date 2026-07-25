@@ -228,8 +228,8 @@ SafeHouse/
   windows/
     youtube-budget/         the watch-time budget (PowerShell, live) + Python port
     safehouse-adblock.ps1   captures VM ad traffic and builds firewall rules
-    set-dns.ps1             adapter DNS + NRPT rule
-    opera-policy.ps1        closes Opera GX's VPN and DoH
+    safehouse_setup dns             adapter DNS + NRPT rule
+    safehouse_setup browser        closes Opera GX's VPN and DoH
     parental-blocks/        host lists for the on-demand blocks
   python/                 Python port of the watcher (216 tests) — see docs/PYTHON-PORT.md
   ansible/                playbook + roles for the WSL side
@@ -261,7 +261,7 @@ worse than no control at all.
   deliberate choice: the alternative means installing a root certificate and intercepting
   TLS on a child's machine, which weakens the security of everything else they do.
 - **A VPN defeats all of it.** Any VPN tunnels around every DNS and firewall control here.
-  `windows/opera-policy.ps1` closes Opera GX's built-in one specifically; a VPN the user
+  `python -m safehouse_setup browser` closes Opera GX's built-in one specifically; a VPN the user
   installs deliberately is out of scope.
 
 ---

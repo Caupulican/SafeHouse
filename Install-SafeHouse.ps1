@@ -265,7 +265,7 @@ if ($WhatIf) {
 # --- 7. Opera GX policy ------------------------------------------------------
 Write-Step 'Applying the Opera GX lockdown policy...'
 if ($WhatIf) {
-    Write-Info 'would run windows\opera-policy.ps1'
+    Write-Info 'would apply browser policy via safehouse_setup.browser'
 } else {
     if (Test-Path $pyExe) {
         $rc = & $pyExe -c "from safehouse_setup import browser; browser.apply(); browser.forbid_vpn_in_profiles(); print('ok')" 2>&1

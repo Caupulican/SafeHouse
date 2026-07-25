@@ -143,7 +143,7 @@ def decide(state: State, cfg: Config, obs: Observation) -> tuple[State, list[Act
     else:
         if obs.hosts_blocked:
             # Removing only SafeHouse's own auto-block marker is the platform layer's
-            # job; a block applied by hand with parental-toggle.ps1 carries a different
+            # job; a block applied by hand with `safehouse_setup toggle` carries a different
             # marker and is left alone there.
             actions.append(UnblockHosts(reason="day-reset" if did_reset else "under-budget"))
             actions.append(ClearFirewall())

@@ -19,7 +19,7 @@ Windows adapter DNS + NRPT ──► <WSL_IP>:53    AdGuard Home
 
 The important property: **the Windows side does not change.** The adapter DNS and the
 global NRPT rule already point at the WSL `eth0` IP. AdGuard Home simply takes over `:53`
-on that IP and Pi-hole moves down to `:5353`. No `set-dns.ps1` re-run, no NRPT edit.
+on that IP and Pi-hole moves down to `:5353`. No `safehouse_setup dns` re-run, no NRPT edit.
 
 ## Setup
 
@@ -86,7 +86,7 @@ things resolve DNS on their own and never touch Pi-hole *or* AdGuard Home:
 | Bypass | Status | Fix |
 |---|---|---|
 | **Avast Real Site / Secure DNS** | **RESOLVED 2026-07-25** — Avast uninstalled; Defender is now the only AV | Was serving 20k+ queries through its own `[dnsdoh]` resolver, bypassing every filter here |
-| **Opera GX** | **RESOLVED 2026-07-25** — VPN forbidden in-profile and pinned off by machine policy | `windows/opera-policy.ps1` (see below) |
+| **Opera GX** | **RESOLVED 2026-07-25** — VPN forbidden in-profile and pinned off by machine policy | `python -m safehouse_setup browser` (see below) |
 | Edge / Chrome secure DNS | Already disabled by machine policy (`DnsOverHttpsMode=off`) | — |
 | crosvm (Play Games VM) | Uses its own DoH; covered by the firewall layer | See [FIREWALL.md](FIREWALL.md) |
 
@@ -97,7 +97,7 @@ set for Edge and Chrome do not cover it. It ships two independent bypasses: its 
 resolver, and a built-in free VPN that tunnels all browser traffic through Opera's
 proxies — while that VPN is on, nothing in this repo sees the traffic at all.
 
-`windows/opera-policy.ps1` (run elevated) closes both under
+`python -m safehouse_setup browser` (run elevated) closes both under
 `HKLM\SOFTWARE\Policies\OperaSoftware\Opera`, which is out of reach of the browser's own
 settings UI.
 

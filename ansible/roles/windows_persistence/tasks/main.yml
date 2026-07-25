@@ -10,20 +10,14 @@
     path: /mnt/c/Temp
     state: directory
 
-- name: Ensure .pihole dir in the Windows profile
-  ansible.builtin.file:
-    path: "{{ winprofile.stdout }}/.pihole"
-    state: directory
-
-- name: Stage set-dns.ps1 into the Windows profile
+# DNS persistence moved into the Python package (safehouse_setup), so there are no
+# standalone .ps1 files to stage or keep in sync. The package is staged with the rest
+# of the Windows tree below; arming it is:
+#     C:\SafeHouse\python\python.exe -m safehouse_setup persist
+- name: Stage the Python host-configuration package
   ansible.builtin.copy:
-    src: "{{ repo_dir }}/windows/set-dns.ps1"
-    dest: "{{ winprofile.stdout }}/.pihole/set-dns.ps1"
-
-- name: Stage mktask.ps1 into C:\Temp
-  ansible.builtin.copy:
-    src: "{{ repo_dir }}/windows/mktask.ps1"
-    dest: /mnt/c/Temp/mktask.ps1
+    src: "{{ repo_dir }}/python/safehouse_setup"
+    dest: /mnt/c/SafeHouse/windows/youtube-budget/
 
 - name: Ensure C:\SafeHouse working dirs exist
   ansible.builtin.file:
@@ -42,7 +36,6 @@
     dest: "{{ item.dest }}"
   loop:
     - { src: "{{ repo_dir }}/windows/safehouse-adblock.ps1", dest: /mnt/c/SafeHouse/windows/safehouse-adblock.ps1 }
-    - { src: "{{ repo_dir }}/windows/parental-toggle.ps1",   dest: /mnt/c/SafeHouse/windows/parental-toggle.ps1 }
     - { src: "{{ repo_dir }}/windows/parental-blocks/youtube.txt", dest: /mnt/c/SafeHouse/windows/parental-blocks/youtube.txt }
     - { src: "{{ repo_dir }}/blocklists/ad-ip-ranges.txt",   dest: /mnt/c/SafeHouse/blocklists/ad-ip-ranges.txt }
     - { src: "{{ repo_dir }}/blocklists/ad-watchlist.txt",   dest: /mnt/c/SafeHouse/blocklists/ad-watchlist.txt }
@@ -62,7 +55,7 @@
     msg:
       - "Pi-hole is up. One-time ADMIN steps remain (elevated PowerShell):"
       - "1) Point DNS:      Set-DnsClientServerAddress -InterfaceAlias 'Ethernet' -ServerAddresses <WSL-eth0-IP>"
-      - "2) Arm logon task: powershell -ExecutionPolicy Bypass -File C:\\Temp\\mktask.ps1"
+      - "2) Arm logon task: C:\\SafeHouse\\python\\python.exe -m safehouse_setup persist"
       - "3) Arm firewall:   powershell -ExecutionPolicy Bypass -File C:\\SafeHouse\\windows\\safehouse-adblock.ps1  (with ads showing)"
       - "4) (Optional) Arm YouTube budget: powershell -ExecutionPolicy Bypass -File C:\\SafeHouse\\windows\\youtube-budget\\install-task.ps1  (ARMS enforcement)"
       - "Then RESTART Google Play Games so the crosvm VM picks up Pi-hole. See windows/README.md."

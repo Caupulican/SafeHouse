@@ -88,7 +88,7 @@ each tick does, in order:
    ```
 
    into the hosts file — **byte-preserving** (the mixed CRLF header / LF body is left
-   untouched; same algorithm as `windows\parental-toggle.ps1`) — set `blocked_by_budget`,
+   untouched; same algorithm as `python -m safehouse_setup toggle`) — set `blocked_by_budget`,
    and flush DNS (`ipconfig /flushdns`). It also adds SafeHouse-owned inbound and outbound
    Windows Firewall rules for the pinned YouTube endpoints, which stop a pre-existing QUIC
    stream that a hosts/DNS change cannot terminate. The next day's reset removes both blocks again.
@@ -96,7 +96,7 @@ each tick does, in order:
 It shares the **block host list** with the manual toggle and never double-inserts: if a
 `# === Parental block: YouTube ... ===` section already exists (manual or auto), it leaves
 it alone. The automatic daily reset lifts only the **auto** block — a YouTube block you
-applied by hand with `parental-toggle.ps1` is left in place.
+applied by hand with `safehouse_setup toggle` is left in place.
 
 Each tick is resilient: a transient error is logged and the loop continues; if the `pktmon`
 counters can't be read the watcher re-arms the session and skips that sample (no phantom
@@ -214,4 +214,4 @@ counts as watch time toward the budget).
 - `common.ps1` — shared helpers (state, pinned-IP state, byte-preserving hosts splice,
   DNS-Client ETW IP harvest + pktmon per-IP byte metering).
 - `config.json` — documented config sample (limit / sample / window / min-throughput / pin-idle-expire).
-- Enforcement host list: `..\parental-blocks\youtube.txt` (shared with `parental-toggle.ps1`).
+- Enforcement host list: `..\parental-blocks\youtube.txt` (shared with `safehouse_setup toggle`).
