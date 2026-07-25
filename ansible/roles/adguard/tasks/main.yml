@@ -58,14 +58,29 @@
   retries: 30
   delay: 2
 
-# The first-run wizard is interactive by design, so the chain is not live until it is
-# completed. Saying so explicitly beats leaving DNS half-configured and silently broken.
-- name: AdGuard Home next steps
+# The first-run wizard is interactive by design, and it is the one thing that would
+# stop this being an unattended install. AdGuard exposes it as an API, so bootstrap.py
+# drives it: completes setup, points it at Pi-hole, enables the parental settings and
+# applies the filter set. Idempotent, so re-running the playbook is safe.
+- name: Configure AdGuard Home (wizard, upstream, filters)
+  ansible.builtin.command:
+    cmd: >-
+      python3 {{ repo_dir }}/adguard/bootstrap.py
+      --base-url http://127.0.0.1:{{ adguard_web_port }}
+      --upstream {{ wsl_ip }}:{{ adguard_upstream_port }}
+      --password-file {{ adguard_dir }}/.admin-password
+  register: _bootstrap
+  changed_when: "'already configured' not in _bootstrap.stdout"
+
+- name: Lock down the generated admin password
+  ansible.builtin.file:
+    path: "{{ adguard_dir }}/.admin-password"
+    mode: "0600"
+
+- name: AdGuard Home summary
   ansible.builtin.debug:
     msg:
-      - "AdGuard Home is up: http://localhost:{{ adguard_web_port }}"
-      - "FINISH THE WIZARD -- DNS is not chained until you do:"
-      - "  1. Listen interface: {{ wsl_ip }}, admin port {{ adguard_web_port }}"
-      - "  2. Upstream DNS servers: {{ wsl_ip }}:{{ adguard_upstream_port }}  (Pi-hole)"
-      - "  3. Parallel requests: OFF, so every query traverses Pi-hole"
-      - "Verify: dig @{{ wsl_ip }} doubleclick.net +short   -> 0.0.0.0"
+      - "AdGuard Home : http://localhost:{{ adguard_web_port }}  (user: admin)"
+      - "Password     : {{ adguard_dir }}/.admin-password"
+      - "Upstream     : {{ wsl_ip }}:{{ adguard_upstream_port }} (Pi-hole)"
+      - "Verify       : dig @{{ wsl_ip }} doubleclick.net +short   -> 0.0.0.0"

@@ -15,7 +15,7 @@ windows\parental-blocks\youtube.txt) and from the flat staged layout
            Idempotent.
   (no switch) : print whether <Name> is currently blocked or allowed.
 
-Marker convention (compatible with an external undo script matching the same markers,
+Marker convention (stable and documented so an external undo script can match it,
 which matches start `=== Parental block:` and end `=== end .* block ===`):
   start: # === Parental block: <DisplayName> (toggled via parental-toggle.ps1) ===
   end:   # === end <DisplayName> block ===

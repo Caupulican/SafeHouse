@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Configure a fresh AdGuard Home end to end, with no wizard.
+
+    python3 adguard/bootstrap.py --upstream <WSL_IP>:5353
+
+AdGuard Home's first run puts up an interactive setup wizard, which is the one thing
+standing between this stack and an unattended install. It also exposes that wizard as an
+API, so this drives it directly: completes setup, points it at Pi-hole, turns on the
+parental settings, and applies the filter set from filters.json.
+
+Idempotent. On an already-configured instance the wizard step is skipped and the rest is
+reconciled, so it is safe to re-run -- which matters, because the alternative is an
+operator wondering whether it is safe and therefore never running it.
+
+Stdlib only.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import secrets
+import string
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+
+
+def api(base, auth, path, payload=None, method=None, timeout=60):
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(
+        base + path, data=data, method=method or ("POST" if data is not None else "GET")
+    )
+    if auth:
+        req.add_header("Authorization", "Basic " + auth)
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode()
+    except (urllib.error.URLError, OSError) as exc:
+        return None, str(exc)
+
+
+def wait_for(base, attempts=60):
+    for _ in range(attempts):
+        status, _ = api(base, None, "/control/status", timeout=5)
+        if status is not None:
+            return True
+        time.sleep(2)
+    return False
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--base-url", default="http://127.0.0.1:3000")
+    p.add_argument("--username", default="admin")
+    p.add_argument("--password-file", type=Path,
+                   default=Path.home() / "adguard" / ".admin-password",
+                   help="generated on first run if absent")
+    p.add_argument("--upstream", required=True,
+                   help="Pi-hole address, e.g. <WSL_IP>:5353")
+    p.add_argument("--dns-port", type=int, default=53,
+                   help="container-side DNS port (host mapping is compose's job)")
+    p.add_argument("--web-port", type=int, default=3000)
+    p.add_argument("--skip-filters", action="store_true")
+    args = p.parse_args(argv)
+
+    base = args.base_url.rstrip("/")
+    if not wait_for(base):
+        print(f"!! AdGuard Home never became reachable at {base}", file=sys.stderr)
+        return 1
+
+    # A generated password beats a known default: this dashboard can switch off every
+    # filter in the stack, so shipping one password to every machine is not acceptable.
+    if args.password_file.exists():
+        password = args.password_file.read_text().strip()
+    else:
+        alphabet = string.ascii_letters + string.digits
+        password = "".join(secrets.choice(alphabet) for _ in range(24))
+        args.password_file.parent.mkdir(parents=True, exist_ok=True)
+        args.password_file.write_text(password + "\n")
+        args.password_file.chmod(0o600)
+        print(f"[*] generated admin password -> {args.password_file}")
+
+    auth = base64.b64encode(f"{args.username}:{password}".encode()).decode()
+
+    # --- 1. wizard (only on a virgin instance) -------------------------------
+    status, _ = api(base, auth, "/control/status")
+    configured = status == 200
+    if not configured:
+        print("[*] completing first-run setup...")
+        st, body = api(base, None, "/control/install/configure", {
+            "web": {"ip": "0.0.0.0", "port": args.web_port},
+            "dns": {"ip": "0.0.0.0", "port": args.dns_port},
+            "username": args.username,
+            "password": password,
+        })
+        if st != 200:
+            print(f"!! setup failed ({st}): {body[:200]}", file=sys.stderr)
+            return 1
+        time.sleep(3)
+    else:
+        print("[*] already configured - skipping the wizard")
+
+    # --- 2. upstream: everything not blocked here goes to Pi-hole ------------
+    print(f"[*] upstream -> {args.upstream}")
+    st, body = api(base, auth, "/control/dns_config", {
+        "upstream_dns": [args.upstream],
+        "bootstrap_dns": ["1.1.1.1", "1.0.0.1"],
+        # Empty upstream_mode = use the first working upstream rather than
+        # load-balancing, so every query deterministically traverses Pi-hole and its
+        # blocklists instead of sometimes going straight out.
+        "upstream_mode": "",
+        "protection_enabled": True,
+    })
+    if st != 200:
+        print(f"!! could not set upstream ({st}): {body[:200]}", file=sys.stderr)
+
+    # --- 3. parental settings ------------------------------------------------
+    print("[*] parental control + SafeSearch")
+    api(base, auth, "/control/parental/enable", {})
+    api(base, auth, "/control/safesearch/settings", {
+        "enabled": True, "bing": True, "duckduckgo": True, "ecosia": True,
+        "google": True, "pixabay": True, "yandex": True, "youtube": True,
+    }, method="PUT")
+
+    # --- 4. filter lists -----------------------------------------------------
+    if args.skip_filters:
+        print("[*] --skip-filters")
+    else:
+        print("[*] applying filter lists...")
+        rc = subprocess.call([
+            sys.executable, str(HERE / "apply-filters.py"),
+            "--base-url", base, "--username", args.username,
+            "--creds", str(args.password_file),
+        ])
+        if rc != 0:
+            print("!! filter application reported a problem", file=sys.stderr)
+
+    print()
+    print(f"AdGuard Home ready: {base}")
+    print(f"  user     : {args.username}")
+    print(f"  password : {args.password_file}")
+    print(f"  upstream : {args.upstream} (Pi-hole)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

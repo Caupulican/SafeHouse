@@ -1,8 +1,39 @@
+# Pi-hole adlists — one URL per line, loaded by ../scripts/load-blocklists.sh.
+#
+# Ads, tracking, malware. These are general-purpose lists. The in-app / mobile ad SDK
+# coverage that matters for Google Play Games is applied at AdGuard Home instead —
+# see ../adguard/filters.json.
+
 https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
 https://raw.githubusercontent.com/hagezi/dns-blocklists/main/hosts/pro.txt
 https://big.oisd.nl
 https://raw.githubusercontent.com/hagezi/dns-blocklists/main/hosts/pro.plus.txt
 https://raw.githubusercontent.com/jerryn70/GoodbyeAds/master/Hosts/GoodbyeAds.txt
 https://adaway.org/hosts.txt
-# Parental NSFW coverage — referenced by URL only (never the domains). HaGeZi NSFW blocklist.
-https://raw.githubusercontent.com/hagezi/dns-blocklists/main/hosts/nsfw.txt
+
+# ---------------------------------------------------------------------------
+# ADULT / NSFW COVERAGE — NOT SHIPPED. ADD YOUR OWN.
+# ---------------------------------------------------------------------------
+# This repo ships no adult-content blocklist: not the domains, and not a URL pointing
+# at them. The right list differs by household and by jurisdiction, it is not this
+# project's place to curate or redistribute one, and a stale list committed here would
+# give a false sense of coverage — the worst outcome for a control like this.
+#
+# To add one, append a single line below with a list of your choosing. Any
+# hosts-format or domain-list URL works. Several blocklist projects publish
+# well-maintained ones; pick one you are willing to audit, and read what it blocks
+# before pointing a family's DNS at it.
+#
+#     https://example.invalid/your-chosen-list.txt
+#
+# Then apply it:
+#     ./scripts/load-blocklists.sh
+#
+# Two things to know before relying on it:
+#
+#   1. DNS blocking is domain-level. It cannot see inside HTTPS, so it stops a site
+#      from loading but does nothing about material embedded in a site you allow.
+#   2. AdGuard Home has its own "Parental control" category filter, switched on by
+#      adguard/bootstrap.py. That is independent of this file and may be sufficient on
+#      its own. Check it before adding an overlapping list — overlapping lists make
+#      false positives considerably harder to diagnose.

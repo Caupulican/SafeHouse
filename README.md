@@ -1,134 +1,298 @@
 # SafeHouse
 
-Infrastructure-as-Code for a network-level ad-blocking stack that kills ads inside
-Google Play Games on PC (and everything else on this machine), using **Pi-hole** for DNS and the
-**Windows Firewall** for the leaks DNS cannot catch.
+Network-level ad blocking and parental controls for a Windows family PC — including
+**inside the Android games** that Google Play Games runs on the desktop, which is where
+most ad blockers stop working.
 
-This repo is the source of truth and backup for the whole setup. Rebuild it anywhere with one
-command (Ansible or a plain bash bootstrap).
-
-## Two layers of defense
-
-Google Play Games runs Android games inside a `crosvm` VM. Ads are blocked at two layers, neither
-of which touches the inside of the VM:
-
-1. **DNS (Pi-hole).** Cheap and catches most ads. The Windows adapter points at Pi-hole and a
-   global NRPT rule forces the Windows DNS Client through it even when the router advertises an
-   IPv6 resolver; Chrome/Edge secure DNS is disabled by policy. The VM inherits the adapter DNS,
-   and ad domains resolve to `0.0.0.0`. About 1.3M blocked domains plus regex rules for named
-   mobile-game ad networks. It also carries a **parental content layer**: a regex
-   denylist (`blocklists/parental-denylist.txt`, e.g. the YouTube family) plus **adult/NSFW**
-   coverage pulled in via a referenced blocklist URL in `blocklists/adlists.txt` (a link, never
-   domain literals in this public repo). The blocklists **auto-update weekly** (see below).
-2. **Connection layer (Windows Firewall).** Some ad SDKs never ask Pi-hole: they resolve over
-   their own encrypted DNS (DoH), over QUIC, or reuse a cached IP, so the DNS layer never sees
-   them. crosvm re-originates every guest connection from the host `crosvm.exe` process, so a host
-   firewall rule blocks those ad servers and the VM cannot bypass it. See
-   [docs/FIREWALL.md](docs/FIREWALL.md).
-
-Optionally, **AdGuard Home** chains in front of Pi-hole on `:53` (Pi-hole moves to `:5353`) to add
-the two things Pi-hole lacks: **per-client** policy and **time-of-day schedules**, plus a
-maintained one-click YouTube ruleset. The Windows adapter DNS and NRPT rule stay pointed at the
-same WSL IP, so nothing on the Windows side changes. See [docs/ADGUARD.md](docs/ADGUARD.md).
-
-> Any filtering resolver only filters the queries that reach it. Two bypasses on this machine
-> made the DNS layer decorative and are both now closed: **Avast Real Site (Secure DNS)**, which
-> resolved through its own DoH (Avast has since been removed), and **Opera GX**, whose built-in
-> VPN tunnels all browser traffic past every filter here — pinned off by
-> [`windows/opera-policy.ps1`](windows/opera-policy.ps1). See
-> [docs/ADGUARD.md](docs/ADGUARD.md#hard-prerequisite-close-the-doh-bypasses).
-
-> Key gotcha baked into this design: the crosvm VM reads host DNS only at launch and otherwise
-> uses its own encrypted DNS. After DNS is (re)pointed or firewall rules change, **Google Play
-> Games must be restarted** for the VM to pick it up. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-## The deterministic ad blocker
-
-[`windows/safehouse-adblock.ps1`](windows/safehouse-adblock.ps1) is one self-elevating script that
-does the whole loop and is safe to re-run any time:
-
-1. Captures the VM's current outbound IPs from the host.
-2. Classifies each by network owner (ASN) and reverse DNS against `blocklists/ad-watchlist.txt`,
-   a list of stable ad-network identities that keep working when the servers rotate IPs.
-3. Logs every observation to `logs/traffic.csv`.
-4. Ingests the confirmed ad IPs into `blocklists/ad-ip-ranges.txt`.
-5. Rebuilds the `SafeHouse-AdBlock` firewall group from that ruleset (TCP and UDP, reboot-safe).
+Everything is infrastructure-as-code. One command rebuilds the whole stack on a fresh
+machine.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\safehouse-adblock.ps1
+powershell -ExecutionPolicy Bypass -File .\Install-SafeHouse.ps1
 ```
+
+---
+
+## Why this exists
+
+Blocking ads and limiting screen time on a child's PC sounds like a solved problem. In
+practice, three things break every simple approach:
+
+**1. In-game ads do not use the browser.** Google Play Games runs Android games inside a
+`crosvm` virtual machine. Browser extensions never see that traffic. The ad SDKs embedded
+in those games are not web advertising — they are Android SDKs, and generic web
+blocklists barely touch them.
+
+**2. Ad SDKs actively route around DNS filtering.** They resolve over their own encrypted
+DNS (DoH), over QUIC, or simply reuse a cached IP address. A DNS blocklist never sees the
+lookup, so the ad loads anyway.
+
+**3. "Blocked" and "actually blocked" are different things.** This is the failure that
+motivated most of this repo. A control can report success while doing nothing — a hosts
+file entry that the browser bypasses via its own resolver, a time budget that meters the
+wrong traffic, a filter list that was added but left disabled. Each looks fine on a
+dashboard. The child just keeps watching.
+
+SafeHouse is built around that third point. Where a design choice trades convenience for
+**verifiability**, it takes verifiability, and the documentation says how to check.
+
+---
+
+## What it does
+
+| Capability | Layer |
+|---|---|
+| Blocks ads, trackers, malware network-wide | Pi-hole + AdGuard Home (DNS) |
+| Blocks **in-app / in-game ad SDKs** | AdGuard Home (Android-specific filter lists) |
+| Blocks ads that skip DNS entirely | Windows Firewall (by IP, against the VM's host process) |
+| **Daily YouTube watch-time budget** with automatic blocking | Windows service + hosts/firewall/resolver |
+| Forced SafeSearch, parental content category | AdGuard Home |
+| Closes browser DoH/VPN bypasses | Machine policy + DNS bypass blocklist |
+
+---
+
+## Architecture
+
+Two independent layers. Neither is sufficient alone, and the reason each exists is the
+specific thing the other cannot do.
+
+```
+                    ┌──────────────────────────────────────┐
+   Windows host     │  Windows Firewall (outbound)         │  ← catches ads that
+   ─────────────    │  blocks ad IPs from crosvm.exe       │    never do a DNS lookup
+                    └──────────────────────────────────────┘
+                                    │
+   adapter DNS + NRPT rule          ▼
+                    ┌──────────────────────────────────────┐
+   WSL2 (Docker)    │  AdGuard Home        :53             │  ← per-client policy,
+                    │   ad-SDK + game + bypass filters     │    schedules, SafeSearch
+                    └──────────────┬───────────────────────┘
+                                   │ upstream
+                    ┌──────────────▼───────────────────────┐
+                    │  Pi-hole             :5353           │  ← bulk domain blocklists
+                    └──────────────┬───────────────────────┘
+                                   ▼
+                            1.1.1.1 / 1.0.0.1
+```
+
+### Why DNS alone is not enough
+
+DNS filtering answers "what address is this name?" — so it can only block what asks. An
+ad SDK that connects straight to a hardcoded IP never asks. Measured on a real machine:
+with DNS filtering alone, roughly 20% of in-game ads still appeared.
+
+### Why the firewall layer works on a VM
+
+crosvm uses **userspace networking**: it terminates the guest's TCP/UDP inside the host
+`crosvm.exe` process and re-originates every connection from there. So every ad server a
+game talks to appears as a connection owned by a normal Windows process — and a host
+firewall rule applies to it, regardless of how the guest resolved the address. The VM has
+no separate network path to escape through.
+
+```powershell
+# see it for yourself
+$pids = (Get-Process crosvm).Id
+Get-NetTCPConnection -State Established -OwningProcess $pids | Select RemoteAddress, RemotePort
+```
+
+### Why two DNS servers
+
+They are good at different things, and chaining is cheaper than choosing.
+
+- **Pi-hole** — bulk domain blocking. Millions of domains, mature tooling, good logs.
+- **AdGuard Home** — per-client policy, time-of-day schedules, forced SafeSearch, a
+  parental category filter, and a REST API that lets the YouTube budget enforce at the
+  resolver rather than by guessing IP addresses.
+
+AdGuard owns `:53` and forwards everything it does not block to Pi-hole on `:5353`. From
+Windows nothing changes: the adapter and NRPT rule point at the same address either way.
+
+---
 
 ## Quick start
 
-### One command, any machine
-```bash
+### Requirements
+
+- Windows 10/11 with **WSL2** and a Linux distro (`wsl --install`)
+- Docker inside WSL — installed automatically if missing
+- Administrator rights on Windows (UAC prompt)
+
+### Install
+
+```powershell
+git clone https://github.com/Caupulican/SafeHouse.git
 cd SafeHouse
+powershell -ExecutionPolicy Bypass -File .\Install-SafeHouse.ps1
+```
+
+Self-elevating and **idempotent** — it is also the upgrade and repair path.
+
+```powershell
+.\Install-SafeHouse.ps1 -LimitMinutes 120   # 2-hour budget instead of the 3-hour default
+.\Install-SafeHouse.ps1 -WhatIf             # show every step, change nothing
+.\Install-SafeHouse.ps1 -SkipWsl            # repair only the Windows half
+```
+
+### Linux/WSL side only
+
+```bash
 ./scripts/deploy.sh                 # Pi-hole only
-./scripts/deploy.sh --with-adguard  # AdGuard Home chained in front of Pi-hole
+./scripts/deploy.sh --with-adguard  # the full chain
 ```
 
-Installs Ansible if missing, which installs Docker if missing, brings the stack up,
-auto-detects the WSL IP, generates a random Pi-hole admin password on first run
-(`~/pihole/.admin-password`), loads all blocklists, rebuilds gravity, installs the weekly
-auto-update and stages the Windows scripts to `C:\SafeHouse`. Safe to re-run.
+### After installing
 
-### Option B: plain bash (no Ansible)
-```bash
-cd SafeHouse
-./scripts/bootstrap.sh
+**Fully quit and reopen Google Play Games** (tray icon → Quit). The crosvm VM reads host
+DNS only at launch, so it keeps using the previous resolver until restarted. This catches
+people out constantly.
+
+Verify:
+
+```powershell
+Resolve-DnsName doubleclick.net    # -> 0.0.0.0        (filtering works)
+Resolve-DnsName github.com         # -> a real address (nothing else broke)
+C:\SafeHouse\windows\youtube-budget\youtube-budget-ctl.ps1 status
 ```
 
-Then finish the admin steps, which need UAC and cannot be automated from WSL (enforce
-DNS/NRPT, arm the logon task, arm the firewall): see [windows/README.md](windows/README.md).
+---
 
-## Layout
+## The YouTube watch-time budget
+
+A cumulative daily allowance — "3 hours a day, spend it whenever" — rather than a
+time-of-day window. Nothing off the shelf does this: not AdGuard Home schedules, not
+Microsoft Family Safety. Both do time-of-day windows or total device screen time.
+
+**Default: 180 minutes/day.** Set it in `windows/youtube-budget/.env`:
+
+```ini
+YB_LIMIT_MIN=180
+```
+
+then re-run `install-task.ps1`. Full key documentation in `.env.example`.
+
+### How the metering works
+
+It measures **bytes to the IP addresses that YouTube hostnames actually resolved to** —
+not "time with the tab open", and not "traffic to Google's published ranges".
+
+Why not those:
+
+- **Google's published IP ranges miss the video.** Much of it is served from Google Global
+  Cache nodes inside the ISP, whose addresses are not in Google's published list at all.
+- **DNS-cache polling misses it too.** Browsers coalesce QUIC connections onto a warm
+  address and stop re-resolving, so a stream can run for an hour with no fresh lookups.
+
+So the watcher reads the Windows DNS-Client event channel for YouTube-family lookups,
+pins the answers, and meters inbound bytes to exactly those addresses with `pktmon`.
+A pin is kept alive by **traffic, not DNS recency**, which is what survives the QUIC
+behaviour above.
+
+> **Known limitation, stated plainly.** `pktmon` allows 32 filters, so only 32 addresses
+> can be metered at once. Video comes from `*.googlevideo.com`; thumbnails, avatars and
+> the API resolve far more often. Early versions let the chatty endpoints crowd the video
+> endpoint out of those 32 slots, and the meter went blind — 1.4 Mbps flowing while the
+> metered addresses carried 2.6 kbps. Video endpoints are now prioritised in the cap. If
+> you extend this, keep that ordering.
+
+### Control
+
+```powershell
+$ctl = 'C:\SafeHouse\windows\youtube-budget\youtube-budget-ctl.ps1'
+
+& $ctl status            # used / limit / remaining / what is blocking
+& $ctl grant 30          # +30 minutes, today only
+& $ctl set-limit 120     # change the daily limit
+& $ctl block             # block now and hold it
+& $ctl allow             # lift the block
+& $ctl reset             # zero today's usage
+```
+
+Enforcement **reconciles every tick**, so if something removes the block it goes back.
+That matters: the original bug in this tool was latching on the transition, so once
+"blocked" was recorded, nothing ever re-checked it.
+
+---
+
+## Repository layout
 
 ```
 SafeHouse/
-  pihole/         docker-compose.yml (parametrised) + .env.example
-  blocklists/     adlists.txt (incl. NSFW URL), regex-denylist.txt,
-                  parental-denylist.txt (parental DNS layer)
-                  ad-ip-ranges.txt, ad-watchlist.txt (firewall layer)
-  tools/          adhunt.sh + parse_cap.py (silent SNI ad-server hunter)
-  windows/        safehouse-adblock.ps1 (firewall), set-dns.ps1 + mktask.ps1 (DNS persistence),
-                  parental-toggle.ps1 + parental-blocks/ (on-demand hosts-layer blocks),
-                  youtube-budget/ (Windows-native daily YouTube watch-time budget + auto-block)
-  adguard/        docker-compose.yml + .env.example (optional, chained in front of Pi-hole)
-  automation/     safehouse-autoupdate.{service,timer,cron} unit templates
-  logs/           traffic.csv, auto-update.log (gitignored runtime logs)
-  scripts/        deploy.sh (one-command install), bootstrap.sh, load-blocklists.sh,
-                  export-config.sh, auto-update.sh, install-autoupdate.sh
-  ansible/        playbook.yml + roles (prereqs, pihole, adguard, tools, automation,
-                  windows_persistence)
-  python/         Python port of the YouTube budget watcher (in progress, see
-                  docs/PYTHON-PORT.md) - not yet deployed
-  docs/           ARCHITECTURE.md, RUNBOOK.md, FIREWALL.md, ADGUARD.md, PYTHON-PORT.md
+  Install-SafeHouse.ps1   ← one-click installer (start here)
+
+  adguard/                AdGuard Home: compose, filter set, non-interactive bootstrap
+    filters.json            which filter lists and WHY each was chosen
+    bootstrap.py            completes setup + upstream + parental settings + filters
+    apply-filters.py        reconciles a running instance to filters.json
+  pihole/                 Pi-hole compose + env example
+  blocklists/             adlists, regex denylists, ad IP ranges, ad-network watchlist
+  windows/
+    youtube-budget/         the watch-time budget (PowerShell, live) + Python port
+    safehouse-adblock.ps1   captures VM ad traffic and builds firewall rules
+    set-dns.ps1             adapter DNS + NRPT rule
+    opera-policy.ps1        closes Opera GX's VPN and DoH
+    parental-blocks/        host lists for the on-demand blocks
+  python/                 Python port of the watcher (216 tests) — see docs/PYTHON-PORT.md
+  ansible/                playbook + roles for the WSL side
+  scripts/                deploy.sh, blocklist loading, auto-update
+  tools/                  SNI ad-server hunter
+  docs/                   architecture, runbook, firewall, AdGuard, the port
 ```
 
-## Auto-update
+Every directory has its own README explaining what is in it and why.
 
-The blocklists refresh on a **weekly schedule** (default Sunday 04:00 local). `scripts/auto-update.sh`
-re-applies the repo lists and rebuilds gravity so every adlist (ads + NSFW) re-downloads;
-`scripts/install-autoupdate.sh` installs it as a **systemd timer** (cron fallback) and the Ansible
-`automation` role wires it in during provisioning. Run it by hand any time with
-`./scripts/auto-update.sh` (log in `logs/auto-update.log`). See
-[docs/RUNBOOK.md](docs/RUNBOOK.md) for verify / change-cadence / uninstall.
+---
 
-## Day-to-day
+## What this does **not** do
 
-- Ads came back? Re-run the blocker while ads show: `C:\SafeHouse\windows\safehouse-adblock.ps1`
-- Hunt a CDN-fronted ad by hostname: `bash tools/adhunt.sh` (trigger ads during the capture)
-- Add what you find to `blocklists/` and re-run the blocker or `./scripts/load-blocklists.sh`
-- Back up live changes into the repo: `./scripts/export-config.sh` then commit
-- Limit YouTube watch time: arm the Windows-native budget with
-  `C:\SafeHouse\windows\youtube-budget\install-task.ps1` (elevated) and drive it with
-  `…\youtube-budget-ctl.ps1 status` (measures via the Windows DNS cache, auto-blocks at the
-  daily limit, browser/app-agnostic, no WSL dependency — see
-  [windows/youtube-budget/README.md](windows/youtube-budget/README.md))
-- Dashboard: http://localhost:8053/admin
+Stated up front, because a parental control that is trusted for something it cannot do is
+worse than no control at all.
 
-See [docs/RUNBOOK.md](docs/RUNBOOK.md) for operations and troubleshooting.
+- **No per-channel or per-video filtering.** Every YouTube video comes from the same
+  hostnames; the channel is in the URL path, inside encrypted HTTPS. No DNS or firewall
+  rule can distinguish one creator from another. Use **YouTube Kids → Approved content
+  only** for that.
+- **No adult-content blocklist ships with this repo.** Not the domains, and not a URL
+  pointing at them. Add one you are willing to audit — see `blocklists/adlists.txt`.
+  AdGuard Home's parental category filter is enabled by default and may be enough alone.
+- **It does not survive a determined, technical user with admin rights.** Anyone who can
+  edit the registry, stop a service or change DNS can undo this. It is designed for a
+  young child, not an adversary.
+- **HTTPS content is not inspected.** Blocking is by hostname and address only. This is a
+  deliberate choice: the alternative means installing a root certificate and intercepting
+  TLS on a child's machine, which weakens the security of everything else they do.
+- **A VPN defeats all of it.** Any VPN tunnels around every DNS and firewall control here.
+  `windows/opera-policy.ps1` closes Opera GX's built-in one specifically; a VPN the user
+  installs deliberately is out of scope.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| Ads still in Play Games | The VM was not restarted after a DNS change — quit Play Games from the tray and reopen |
+| Ads with no DNS query in the log | An SDK using a hardcoded IP. Run `safehouse-adblock.ps1` while the ad is on screen |
+| Everything blocked, nothing loads | A filter list is over-blocking. Check the AdGuard query log; it names the rule |
+| Budget never blocks | Check `video=` in `youtube-budget.log`. If it stays 0 during playback the meter is not seeing the stream |
+| Budget blocks too early | The 240s window keeps the clock running through pauses. Tune `YB_WINDOW_SEC` |
+| Watcher disappears | Antivirus quarantined it. Add an exclusion for `C:\SafeHouse` in that product |
+
+Logs live in `C:\ProgramData\SafeHouse\`.
+
+---
+
+## Documentation
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how the layers fit together
+- [docs/ADGUARD.md](docs/ADGUARD.md) — the DNS chain and the bypasses it must close
+- [docs/FIREWALL.md](docs/FIREWALL.md) — connection-layer blocking for the VM
+- [docs/RUNBOOK.md](docs/RUNBOOK.md) — day-to-day operations
+- [docs/PYTHON-PORT.md](docs/PYTHON-PORT.md) — the in-progress Python rewrite
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+This is a personal project shared in case it is useful. It ships no blocklist of adult
+material and makes no claim to be a complete child-safety solution — it is one layer,
+and it is honest about where that layer ends.

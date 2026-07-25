@@ -1,49 +1,46 @@
-# Blocklists: the source of truth
+# Blocklists
 
-These plain-text files drive both layers of blocking. The first two feed **Pi-hole** (DNS layer);
-the last two feed the **Windows Firewall** (connection layer, for ads that bypass DNS).
+Everything the DNS and firewall layers load. Plain text, one entry per line, `#` for
+comments.
 
-## `adlists.txt`
-One blocklist URL per line (loaded into Pi-hole's gravity `adlist` table). Current set:
-StevenBlack, HaGeZi Multi PRO, OISD Big, HaGeZi Pro++, GoodbyeAds, AdAway, chosen for strong
-**mobile / in-app / game-ad** coverage. It also references the **HaGeZi NSFW** list, which is the
-**parental adult/NSFW coverage** for the whole network — see the parental layer below. Lines
-starting with `#` are ignored.
+| File | Layer | What it is |
+|---|---|---|
+| `adlists.txt` | Pi-hole (DNS) | Adlist URLs. Ads, tracking, malware |
+| `regex-denylist.txt` | Pi-hole (DNS) | Regex patterns for named ad networks |
+| `parental-denylist.txt` | Pi-hole (DNS) | Regex for ordinary services to restrict, by name |
+| `ad-ip-ranges.txt` | Windows Firewall | IPs/CIDRs to block outbound. For ads that never do a DNS lookup |
+| `ad-watchlist.txt` | Windows Firewall | Ad-network *identities* (ASN, owner, rDNS) used to classify new IPs |
 
-## `regex-denylist.txt`
-One Pi-hole **regex** per line (loaded as `domainlist` type 3 = regex deny, comment `SafeHouse`).
-These target named mobile-game ad networks & trackers by whole domain, e.g. `(^|\.)applovin\.com$`.
-They catch ad subdomains the public lists miss (this is what we discovered with `adhunt`). Lines
-starting with `#` are ignored.
+Apply the DNS lists with `../scripts/load-blocklists.sh`; the firewall lists with
+`../windows/safehouse-adblock.ps1`.
 
-## `parental-denylist.txt` (parental content layer)
-One Pi-hole **regex** per line, loaded as `domainlist` type 3 = regex deny with the **distinct**
-comment `SafeHouse-Parental` so it stays separate from the ad regex above. This is the **parental
-content layer**: ordinary product/service domains blocked by name, e.g. the **YouTube** family
-(`(^|\.)youtube\.com$`, `googlevideo\.com`, `ytimg\.com`, …). It is **public-repo safe** — names
-only. Adult / NSFW content is **deliberately not listed here**; it is covered network-wide by the
-HaGeZi NSFW **URL** in `adlists.txt` (a link, never the domains). Extend it with more domain
-families (e.g. social media) as commented in the file, then `../scripts/load-blocklists.sh`.
+## No adult-content list ships here
 
-## `ad-watchlist.txt` (firewall layer)
-Stable ad-network identities for the connection-layer blocker (`../windows/safehouse-adblock.ps1`).
-Lines are `asn:<number>`, `owner:<substring>`, or `host:<substring>`. Because it matches on owner
-and hostname rather than raw IP, it keeps catching ad servers after they rotate addresses. Shared
-CDNs (Amazon, Fastly, Akamai, Google, Cloudflare) are intentionally left out.
+Not the domains, and not a URL pointing at them. Three reasons:
 
-## `ad-ip-ranges.txt` (firewall layer)
-The IP/CIDR ruleset the firewall actually blocks. The top section is hand-curated; the `AUTO`
-section below the marker is maintained by `safehouse-adblock.ps1` as it classifies live traffic.
-Re-run that script (elevated) to refresh it. See [../docs/FIREWALL.md](../docs/FIREWALL.md).
+1. It is not this project's place to curate or redistribute that material.
+2. The appropriate list differs by household and jurisdiction.
+3. A stale list committed here would give a false sense of coverage — the worst possible
+   failure for a control like this.
 
-## Adding more (DNS layer)
-1. Hunt the real ad server: `bash ../tools/adhunt.sh` (trigger ads in-game during capture).
-2. Add the offending domain as a regex line here, e.g. `(^|\.)somenetwork\.com$`.
-3. `../scripts/load-blocklists.sh` to apply.
-4. Restart the game (clears the SDK's cached ad IPs) and re-verify.
+`adlists.txt` documents where to add your own. AdGuard Home's parental category filter is
+enabled by default and may be sufficient on its own; check it before stacking an
+overlapping list, because overlapping lists make false positives much harder to diagnose.
 
-## Backing up live changes
-If you add rules via the Pi-hole dashboard, pull them back into these files with
-`../scripts/export-config.sh`, then commit. That keeps the repo authoritative. The export splits
-type-3 regex by comment: `SafeHouse-Parental` rules round-trip to `parental-denylist.txt` (header
-preserved), everything else to `regex-denylist.txt`.
+## Why identities, not addresses
+
+`ad-watchlist.txt` lists ad networks by **ASN, owner name and reverse-DNS pattern**, not
+by IP. Ad servers rotate addresses constantly, so a hand-written IP list goes stale within
+days. `safehouse-adblock.ps1` looks up each live connection's owner and matches it against
+these identities, so a network stays blocked when it moves.
+
+`ad-ip-ranges.txt` is the output of that process: hand-curated entries at the top, and an
+`AUTO` section below the marker maintained by the script. Do not hand-edit below the
+marker.
+
+## Adding a network you have found
+
+1. Note the ad server's owner or ASN (the traffic log records both).
+2. Add an identity line to `ad-watchlist.txt` (`owner:`, `asn:` or `host:`).
+3. Re-run `safehouse-adblock.ps1` while the ad is on screen, so it captures and classifies
+   the live connection.

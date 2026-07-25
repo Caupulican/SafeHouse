@@ -75,7 +75,8 @@ powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\parental-toggle.ps
   the script splices only its own section and leaves every other line (and the file's mixed CRLF/LF
   line endings) untouched.
 - After a change it runs `ipconfig /flushdns`; **reload the browser/app** (hard refresh) to see it.
-- The markers are compatible with `an external undo script matching the same markers`.
+- The markers are a stable, documented convention, so an external undo script can
+  find and remove the same sections.
 
 **Pi-hole / network-layer alternative:** to block YouTube for the whole network instead of one machine,
 uncomment the `# --- YouTube family ---` regexes in `blocklists/parental-denylist.txt` and run
