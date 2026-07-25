@@ -136,7 +136,18 @@ class ReadOnlyPlatform:
         self._suppress("flush dns")
 
     def set_metered_ips(self, ips: list[str]) -> bool:
-        # Metering is passive -- it counts bytes and changes nothing about the machine's
-        # behaviour -- so shadow mode genuinely needs it to run, or seconds_used would
-        # stay zero and the diff would be meaningless.
-        return self._inner.set_metered_ips(ips)
+        """SUPPRESSED. Metering looks passive but is not: pktmon is a single global
+        session for the whole machine, so reconfiguring it tears down the filters the
+        PowerShell watcher is using.
+
+        This was not theoretical -- an earlier version let this call through, and one
+        shadow tick wiped all 32 of the live watcher's filters, leaving it metering
+        unfiltered traffic until the task was restarted. Shadow mode must not be able to
+        degrade the thing it is shadowing.
+
+        The consequence is that during the overlap the Python watcher reads the counters
+        of whichever session already exists. Both implementations pin by the same rule,
+        so the figures stay comparable, and any divergence is exactly what the pin-set
+        diff is meant to surface.
+        """
+        return self._suppress("set metered ips", f"{len(ips)} ips") == "SHADOW"

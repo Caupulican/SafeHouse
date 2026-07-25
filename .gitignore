@@ -34,3 +34,7 @@ __pycache__/
 # Dev-only tooling. The watcher runs on a vendored embeddable Python with the stdlib
 # only, so this is a local convenience, not part of the deployable artifact.
 requirements-dev.txt
+
+# Captured Windows output used as test fixtures is committed deliberately; the
+# vendored embeddable runtime is not - install.py fetches it.
+python/runtime/

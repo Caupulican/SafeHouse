@@ -105,9 +105,18 @@ is covered by tests, including the regressions — latching, frozen `limit_min`,
 values.
 
 **Phase 2 — shadow mode.** Install the Python watcher alongside the PowerShell one with
-`--shadow`: it observes, decides and logs to `youtube-budget-python.log`, but **never**
-touches hosts, firewall or DNS. PowerShell stays the only thing enforcing. Run both for
-several days.
+`--shadow`: it observes, decides and logs to `youtube-budget-python-shadow.log`, but
+**never** touches hosts, firewall or DNS. PowerShell stays the only thing enforcing. Run
+both for several days.
+
+> **pktmon is a single global session for the whole machine.** Reconfiguring it is a
+> mutation of shared state, not a passive read. An early version of shadow mode treated
+> `set_metered_ips` as harmless and let it through; one tick wiped all 32 of the live
+> PowerShell watcher's filters, leaving it metering unfiltered traffic until its task was
+> restarted. Shadow mode must never be able to degrade the thing it is shadowing, so it
+> now suppresses that call and reads whatever session already exists. Both watchers pin
+> by the same rule, so the readings stay comparable — and a pin-set divergence is one of
+> the things the diff is there to catch.
 
 **Phase 3 — diff.** Compare the two logs tick by tick. The Python watcher must agree with
 PowerShell on `seconds_used` and on every block/unblock decision. Disagreements are bugs

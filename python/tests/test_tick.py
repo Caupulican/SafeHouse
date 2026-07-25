@@ -193,8 +193,13 @@ def test_shadow_mode_decides_but_never_enforces(tmp_path):
     assert "block_hosts" not in inner.calls
 
 
-def test_shadow_mode_still_meters(tmp_path):
-    """Otherwise seconds_used stays zero and the log diff proves nothing."""
+def test_shadow_mode_still_accrues_time(tmp_path):
+    """Otherwise seconds_used stays zero and the log diff proves nothing.
+
+    It manages this WITHOUT reconfiguring the shared pktmon session: the Ticker tracks
+    the filter set it *intended*, and reads whatever counter the existing session
+    provides. Both watchers pin by the same rule, so the readings stay comparable.
+    """
     inner = FakePlatform()
     plat = ReadOnlyPlatform(inner)
     t = Ticker(platform=plat, cfg=CFG, paths=Paths.under(tmp_path, suffix="-py"))
@@ -203,7 +208,7 @@ def test_shadow_mode_still_meters(tmp_path):
         stream(inner)
         r = t.run()
     assert r.state.seconds_used > 0
-    assert inner.metered == ["142.250.1.1"]
+    assert inner.metered == [], "the shared session must be left alone"
 
 
 def test_shadow_mode_records_what_it_would_have_done(tmp_path):
@@ -258,3 +263,21 @@ def test_a_genuine_pause_is_still_absorbed_by_the_window(tmp_path):
     plat.advance(SAMPLE)          # counter unchanged: a real, valid zero-byte sample
     r = t.run()
     assert r.watching is True
+
+
+def test_shadow_mode_never_reconfigures_the_shared_meter(tmp_path):
+    """REGRESSION: pktmon is ONE global session for the whole machine. Letting shadow
+    mode reconfigure it wiped all 32 of the live PowerShell watcher's filters on the
+    real machine, leaving it metering unfiltered traffic until the task was restarted.
+    Shadow mode must not be able to degrade the thing it is shadowing."""
+    inner = FakePlatform()
+    plat = ReadOnlyPlatform(inner)
+    t = Ticker(platform=plat, cfg=CFG, paths=Paths.under(tmp_path, suffix="-py"))
+    inner.resolved = ["142.250.1.1"]
+    for _ in range(5):
+        stream(inner)
+        t.run()
+
+    assert inner.metered == [], "shadow mode must not touch the shared pktmon session"
+    assert not [c for c in inner.calls if c.startswith("set_metered_ips")]
+    assert [a for a, _ in plat.suppressed if a == "set metered ips"]
