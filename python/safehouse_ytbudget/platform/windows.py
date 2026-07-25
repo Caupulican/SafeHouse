@@ -32,7 +32,7 @@ from xml.etree import ElementTree
 
 from .. import hosts as hostsmod
 from ..pins import normalise_ip
-from .adguard import AdGuardClient
+from .adguard import AdGuardClient, write_block_date
 
 SYSTEM_ROOT = os.environ.get("SystemRoot", r"C:\Windows")
 PKTMON = Path(SYSTEM_ROOT) / "System32" / "PktMon.exe"
@@ -171,6 +171,9 @@ class WindowsPlatform:
         # well as the hosts file: the resolver can wildcard *.googlevideo.com, which a
         # hosts file cannot, so it closes the CDN the hosts layer structurally cannot.
         self.adguard = adguard
+        # Records which day a resolver block belongs to, so a lift-on-startup task can
+        # tell a leftover block from a fresh one.
+        self.adguard_marker = root / "adguard-block-state.json"
         self._metered: list[str] = []
 
     # --- clock ---------------------------------------------------------------
@@ -221,7 +224,10 @@ class WindowsPlatform:
         hosts_result = self._block_hosts_file()
         if self.adguard is None:
             return hosts_result
-        return f"{hosts_result}; adguard={self.adguard.set_blocked(True)}"
+        adguard_result = self.adguard.set_blocked(True)
+        if adguard_result in ("BLOCKED", "ALREADY"):
+            write_block_date(self.adguard_marker, self.today())
+        return f"{hosts_result}; adguard={adguard_result}"
 
     def _block_hosts_file(self) -> str:
         try:
@@ -246,7 +252,10 @@ class WindowsPlatform:
         hosts_result = self._unblock_hosts_file(scope)
         if self.adguard is None:
             return hosts_result
-        return f"{hosts_result}; adguard={self.adguard.set_blocked(False)}"
+        adguard_result = self.adguard.set_blocked(False)
+        if adguard_result in ("UNBLOCKED", "NONE"):
+            write_block_date(self.adguard_marker, None)
+        return f"{hosts_result}; adguard={adguard_result}"
 
     def _unblock_hosts_file(self, scope: str = "auto") -> str:
         try:

@@ -140,3 +140,31 @@ class AdGuardClient:
         if status != 200:
             return f"ERROR:{status}"
         return "BLOCKED" if blocked else "UNBLOCKED"
+
+
+# --- which day the block belongs to ------------------------------------------
+# The resolver has no memory of *why* a service is blocked, so something has to record
+# it. Without this, a lift-on-startup task cannot tell "the block is left over from
+# yesterday, clear it" from "the block was applied twenty minutes ago, leave it" -- and
+# would hand back YouTube on the first reboot after the budget ran out.
+
+
+def read_block_date(path: Path) -> str | None:
+    """The local date the block was applied, or None if unknown."""
+    if not path.exists():
+        return None
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    value = obj.get("blocked_on")
+    return value if isinstance(value, str) and value else None
+
+
+def write_block_date(path: Path, date: str | None) -> None:
+    """Record the date the block was applied, or clear it when lifting."""
+    from .. import atomicio
+
+    atomicio.write_json(path, {"blocked_on": date} if date else {})
