@@ -189,3 +189,17 @@ def to_json(cfg: Config) -> str:
         {f: getattr(cfg, f) for f in Config.__dataclass_fields__},
         indent=2,
     )
+
+
+def write(config_path: Path, cfg: Config) -> None:
+    """Atomically replace config.json.
+
+    This is the file the watcher re-reads every tick, so a torn write would be read as a
+    corrupt config and silently fall back to defaults -- handing out the default limit
+    instead of the one the parent just set.
+    """
+    from . import atomicio
+
+    atomicio.write_json(
+        config_path, {f: getattr(cfg, f) for f in Config.__dataclass_fields__}
+    )
