@@ -14,10 +14,10 @@ an unbounded day, so a half-written file must never be observable.
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+from . import atomicio
 
 
 @dataclass
@@ -111,24 +111,7 @@ def load(path: Path, *, today: str) -> tuple[State, list[str]]:
 
 
 def save(path: Path, state: State) -> None:
-    """Atomically replace the state file.
-
-    The temp file is created in the destination directory so the rename stays on one
-    volume -- `os.replace` across volumes raises rather than falling back to a copy.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".ybstate-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\r\n") as fh:
-            fh.write(to_json(state) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        # Leaving a stale temp file behind would accumulate junk in a directory the
-        # child can read; drop it on any failure including KeyboardInterrupt.
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    """Atomically replace the state file."""
+    obj = dict(state.extra)
+    obj.update({k: v for k, v in asdict(state).items() if k != "extra"})
+    atomicio.write_json(path, obj)

@@ -22,10 +22,10 @@ hosts file, or any filesystem at all.
 
 from __future__ import annotations
 
-import os
 import re
-import tempfile
 from pathlib import Path
+
+from . import atomicio
 
 # Must match windows/youtube-budget/common.ps1 exactly -- the PowerShell watcher and this
 # one have to recognise, and refuse to double-insert, each other's sections during the
@@ -135,19 +135,5 @@ def write_atomic(path: Path, data: bytes) -> None:
     A torn hosts file is worse than either outcome it sits between: Windows ignores a
     malformed one entirely, so a partial write silently disables every block in it --
     including any unrelated parental blocks the file already carried.
-
-    The temp file is created in the same directory so `os.replace` stays on one volume.
     """
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".hosts-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    atomicio.write_bytes(path, data)
