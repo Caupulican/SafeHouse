@@ -68,7 +68,7 @@ def main(argv=None) -> int:
                    default=Path.home() / "adguard" / ".admin-password",
                    help="generated on first run if absent")
     p.add_argument("--upstream", required=True,
-                   help="Pi-hole address, e.g. <WSL_IP>:5353")
+                   help="Pi-hole address, e.g. 10.0.0.5:5353")
     p.add_argument("--dns-port", type=int, default=53,
                    help="container-side DNS port (host mapping is compose's job)")
     p.add_argument("--web-port", type=int, default=3000)
