@@ -118,10 +118,23 @@ both for several days.
 > by the same rule, so the readings stay comparable — and a pin-set divergence is one of
 > the things the diff is there to catch.
 
-**Phase 3 — diff.** Compare the two logs tick by tick. The Python watcher must agree with
-PowerShell on `seconds_used` and on every block/unblock decision. Disagreements are bugs
-in the port, and this is the only way to find them without experimenting on a child's
-access.
+**Phase 3 — diff.** `python/tools/diff_watchers.py` pairs samples from the two logs by
+timestamp and reports agreement on *watching* (do they accrue at the same rate?) and
+*blocked* (do they enforce the same?). Any blocked disagreement is disqualifying. It does
+not compare absolute `used=` totals: the shadow watcher starts from a fresh state file
+part-way through a day, so its total is legitimately lower.
+
+> Expect transient `kbps=0` samples in **both** logs. The PowerShell watcher rebuilds its
+> pktmon session whenever its pin set changes, and for a moment afterwards
+> `pktmon counters --json` returns an empty array. Both implementations treat that as
+> "skip this sample" rather than zero, so it costs a little accuracy and nothing else —
+> but it does mean a short comparison window can look far worse than the steady state.
+> Judge the diff over hours, not minutes.
+>
+> Also expect the PowerShell watcher to log `active` at `kbps=0`: its rolling window
+> keeps the clock running for `window_sec` after the last above-threshold sample, which
+> is deliberate (an ad break or buffer top-up must not stop the clock). The Python meter
+> does the same thing. Do not read those samples as a metering failure.
 
 **Phase 4 — cutover.** Only once the logs agree: stop and unregister
 `SafeHouse-YouTubeBudget`, register `SafeHouse-YouTubeBudget-Py` without `--shadow`,
