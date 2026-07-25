@@ -32,6 +32,7 @@ from xml.etree import ElementTree
 
 from .. import hosts as hostsmod
 from ..pins import normalise_ip
+from .adguard import AdGuardClient
 
 SYSTEM_ROOT = os.environ.get("SystemRoot", r"C:\Windows")
 PKTMON = Path(SYSTEM_ROOT) / "System32" / "PktMon.exe"
@@ -160,11 +161,16 @@ def parse_pktmon_counters(raw: str) -> int | None:
 
 
 class WindowsPlatform:
-    def __init__(self, *, root: Path, hosts_path: Path, block_list: Path, log_path: Path) -> None:
+    def __init__(self, *, root: Path, hosts_path: Path, block_list: Path, log_path: Path,
+                 adguard: AdGuardClient | None = None) -> None:
         self.root = root
         self.hosts_path = hosts_path
         self.block_list = block_list
         self.log_path = log_path
+        # Optional second enforcement layer. When present, block/unblock drives it as
+        # well as the hosts file: the resolver can wildcard *.googlevideo.com, which a
+        # hosts file cannot, so it closes the CDN the hosts layer structurally cannot.
+        self.adguard = adguard
         self._metered: list[str] = []
 
     # --- clock ---------------------------------------------------------------
@@ -190,12 +196,34 @@ class WindowsPlatform:
     # --- hosts ---------------------------------------------------------------
 
     def hosts_blocked(self) -> bool:
+        """True if EITHER layer is blocking.
+
+        The reconcile compares this against what it wants, so reporting only the hosts
+        file would make it re-apply a block the resolver already has -- and, worse,
+        report "unblocked" while the resolver still refused every lookup.
+        """
         try:
-            return hostsmod.is_blocked(hostsmod.read(self.hosts_path))
+            if hostsmod.is_blocked(hostsmod.read(self.hosts_path)):
+                return True
         except OSError:
-            return False
+            pass
+        if self.adguard is not None:
+            return bool(self.adguard.is_blocked())
+        return False
 
     def block_hosts(self) -> str:
+        """Block by every means available, reporting each.
+
+        Named for the hosts file for historical reasons, but the decision layer means
+        "make YouTube unreachable" -- so the resolver is driven here too. Each layer is
+        independent: one failing must not stop the other being applied.
+        """
+        hosts_result = self._block_hosts_file()
+        if self.adguard is None:
+            return hosts_result
+        return f"{hosts_result}; adguard={self.adguard.set_blocked(True)}"
+
+    def _block_hosts_file(self) -> str:
         try:
             raw = hostsmod.read(self.hosts_path)
         except OSError:
@@ -215,6 +243,12 @@ class WindowsPlatform:
         return f"BLOCKED:{len(entries)}"
 
     def unblock_hosts(self, scope: str = "auto") -> str:
+        hosts_result = self._unblock_hosts_file(scope)
+        if self.adguard is None:
+            return hosts_result
+        return f"{hosts_result}; adguard={self.adguard.set_blocked(False)}"
+
+    def _unblock_hosts_file(self, scope: str = "auto") -> str:
         try:
             raw = hostsmod.read(self.hosts_path)
         except OSError:
