@@ -306,3 +306,45 @@ def test_later_ticks_only_look_back_to_the_previous_tick(tmp_path):
     call = [c for c in plat.calls if c.startswith("resolved_youtube_ips")][0]
     since = int(call.split("since=")[1].rstrip(")"))
     assert plat.now_epoch() - since == SAMPLE
+
+
+def test_shadow_mode_keeps_its_baseline_across_pin_churn(tmp_path):
+    """REGRESSION: the self-reinforcing idle loop.
+
+    In shadow mode pktmon is not touched, so its counter runs on and the meter's
+    baseline stays valid. The Ticker used to drop the baseline whenever its intended
+    pin set changed, so it re-baselined on almost every tick, reported 0 kbps, marked
+    every pin idle, aged them all out and re-added them - churning the set again. On the
+    live machine that pinned the shadow watcher at `idle` for 25 minutes straight
+    (258 pin lines to 79 samples) while the PowerShell watcher measured real video.
+    """
+    inner = FakePlatform()
+    plat = ReadOnlyPlatform(inner)
+    t = Ticker(platform=plat, cfg=CFG, paths=Paths.under(tmp_path, suffix="-py"))
+
+    # Churn the pin set on every tick while real traffic flows.
+    for i in range(15):
+        inner.resolved = [f"142.250.1.{i}"]
+        stream(inner)
+        r = t.run()
+
+    assert r.watching is True, "churn must not stop the meter seeing traffic"
+    assert r.state.seconds_used > 0
+
+
+def test_real_platform_reset_still_happens_on_reconfigure(tmp_path):
+    """The other side: when the platform DOES restart the counter, the baseline must be
+    dropped, or the delta spans the restart and credits a phantom burst."""
+    plat = FakePlatform()
+    t = Ticker(platform=plat, cfg=CFG, paths=Paths.under(tmp_path))
+    plat.resolved = ["142.250.1.1"]
+    stream(plat)
+    t.run()
+    assert plat.metered == ["142.250.1.1"]
+    # FakePlatform reports a genuine reconfigure, so the meter is reset and the next
+    # sample re-baselines rather than crediting a spike.
+    plat.resolved = ["9.9.9.9"]
+    plat.bytes_counter = 10  # counter restarted low
+    plat.advance(SAMPLE)
+    r = t.run()
+    assert r.watching is False

@@ -37,8 +37,10 @@ class Platform(Protocol):
     def hosts_blocked(self) -> bool:
         ...
 
-    def resolved_youtube_ips(self, since_epoch: int) -> list[str]:
-        """IPs that YouTube-family hostnames resolved to since `since_epoch`.
+    def resolved_youtube_ips(self, since_epoch: int) -> list[tuple[str, bool]]:
+        """(IP, is_video) pairs that YouTube-family hostnames resolved to since
+        `since_epoch`. `is_video` marks a googlevideo answer -- the only names that
+        carry actual video, and therefore what must survive the 32-filter cap.
 
         Read from the DNS-Client ETW channel rather than the DNS cache: modern YouTube
         streams over coalesced QUIC connections that stop re-resolving, and much of the
@@ -58,7 +60,13 @@ class Platform(Protocol):
     # --- mutation ------------------------------------------------------------
 
     def set_metered_ips(self, ips: list[str]) -> bool:
-        """Point the byte meter at exactly these IPs. At most 32 (a pktmon limit)."""
+        """Point the byte meter at exactly these IPs. At most 32 (a pktmon limit).
+
+        Returns whether the underlying byte COUNTER was restarted. The caller uses this
+        to decide whether to drop its baseline: a delta spanning a counter restart is
+        meaningless, but dropping the baseline when the counter did *not* restart throws
+        away a perfectly good reading and costs a whole sample.
+        """
         ...
 
     def block_hosts(self) -> str:
@@ -108,7 +116,7 @@ class ReadOnlyPlatform:
     def inbound_bytes(self) -> int | None: return self._inner.inbound_bytes()
     def firewall_ips(self) -> list[str]: return self._inner.firewall_ips()
 
-    def resolved_youtube_ips(self, since_epoch: int) -> list[str]:
+    def resolved_youtube_ips(self, since_epoch: int) -> list[tuple[str, bool]]:
         return self._inner.resolved_youtube_ips(since_epoch)
 
     def log(self, message: str) -> None:
@@ -149,5 +157,13 @@ class ReadOnlyPlatform:
         of whichever session already exists. Both implementations pin by the same rule,
         so the figures stay comparable, and any divergence is exactly what the pin-set
         diff is meant to surface.
+
+        Returns False -- the counter was NOT restarted, because nothing was touched.
+        Returning True here meant the meter dropped its baseline every time the pin set
+        churned, so `observe()` spent almost every tick re-baselining and reported 0.
+        That kept every pin looking idle, so they all aged out and were re-added, which
+        churned the set again: a self-reinforcing loop that pinned the shadow watcher at
+        `idle` forever while the machine streamed video.
         """
-        return self._suppress("set metered ips", f"{len(ips)} ips") == "SHADOW"
+        self._suppress("set metered ips", f"{len(ips)} ips")
+        return False

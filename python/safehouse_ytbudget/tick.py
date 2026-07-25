@@ -138,16 +138,24 @@ class Ticker:
             idle_expire_sec=self.cfg.pin_idle_expire_min * 60,
         )
         for p in added:
-            self.platform.log(f"[pin] +{p.ip} (pins={len(self._pins)})")
+            kind = "video" if p.video else "asset"
+            self.platform.log(f"[pin] +{p.ip} ({kind}) pins={len(self._pins)}")
         for p in evicted:
             self.platform.log(f"[pin] -{p.ip} idle (pins={len(self._pins)})")
 
-        # Reconfigure the meter only when the set actually changed; each change costs a
-        # counter restart and therefore one skipped sample.
+        # Reconfigure the meter only when the set actually changed.
+        #
+        # Drop the baseline ONLY if the platform reports that it really restarted the
+        # counter. In shadow mode it does not -- pktmon belongs to the other watcher and
+        # is left alone -- so the counter runs on and the baseline stays valid. Resetting
+        # regardless meant re-baselining on almost every tick, reporting 0 kbps, marking
+        # every pin idle, ageing them all out and re-adding them, which churned the set
+        # again. A self-reinforcing loop that reported `idle` forever while video played.
         current = tuple(pinmod.ips(self._pins))
         if current != self._metered:
-            if self.platform.set_metered_ips(list(current)):
-                self._metered = current
+            counter_restarted = self.platform.set_metered_ips(list(current))
+            self._metered = current
+            if counter_restarted:
                 self._meter.reset()
 
         return (
@@ -211,6 +219,7 @@ class Ticker:
             f"used={new_state.seconds_used}s/{limit_sec}s "
             f"blocked={new_state.blocked_by_budget} "
             f"kbps={kbps:.0f} pins={len(self._pins)}"
+            f" video={sum(1 for p in self._pins if p.video)}"
         )
         return TickResult(
             state=new_state,

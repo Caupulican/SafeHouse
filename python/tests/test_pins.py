@@ -142,3 +142,64 @@ def test_quiet_tick_changes_nothing():
     again, added, evicted = upd(pins, [], now=NOW + 1, active={"1.1.1.1"})
     assert ips(again) == ips(pins)
     assert added == [] and evicted == []
+
+
+# --- video endpoints survive the cap -----------------------------------------
+
+
+def test_video_pins_are_never_evicted_for_non_video_ones():
+    """THE bug this whole pin design exists to prevent.
+
+    Measured on the live machine: 1.4 Mbps flowing in while the 32 metered addresses
+    carried 2.6 kbps. ytimg, ggpht and the YouTube API resolve constantly and had
+    crowded the one googlevideo endpoint out of the filter budget. Once the browser
+    coalesced onto a QUIC connection it stopped re-resolving, so the displaced endpoint
+    never came back and the meter was blind to the video entirely.
+    """
+    video = [("10.1.0.1", True), ("10.1.0.2", True)]
+    chatter = [(f"10.2.0.{i}", False) for i in range(1, 60)]
+    pins, _, _ = upd([], video + chatter)
+    assert len(pins) == MAX_PINS
+    kept = {p.ip for p in pins}
+    assert "10.1.0.1" in kept and "10.1.0.2" in kept
+
+
+def test_a_newly_resolved_thumbnail_cannot_displace_an_older_video_pin():
+    """Recency must not beat video, or the chatty endpoints win by sheer frequency."""
+    old_video = [Pin(ip="10.1.0.1", first_seen=NOW, last_active=NOW, video=True)]
+    filler = [Pin(ip=f"10.2.0.{i}", first_seen=NOW, last_active=NOW, video=False)
+              for i in range(MAX_PINS - 1)]
+    later = NOW + 600
+    pins, _, evicted = upd(old_video + filler, [("10.3.3.3", False)], now=later)
+    assert len(pins) == MAX_PINS
+    assert "10.1.0.1" in {p.ip for p in pins}
+    assert all(not p.video for p in evicted)
+
+
+def test_video_flag_is_sticky_across_re_resolution():
+    pins, _, _ = upd([], [("10.1.0.1", True)])
+    assert pins[0].video is True
+    pins, _, _ = upd(pins, [("10.1.0.1", False)], now=NOW + 60)
+    assert pins[0].video is True, "a later non-video answer must not clear the flag"
+
+
+def test_video_pins_still_expire_when_genuinely_idle():
+    """Priority is not immortality - a stale video pin must still free its slot."""
+    pins, _, _ = upd([], [("10.1.0.1", True)])
+    pins, _, evicted = upd(pins, [], now=NOW + IDLE)
+    assert pins == []
+    assert [p.ip for p in evicted] == ["10.1.0.1"]
+
+
+def test_plain_ip_list_still_accepted():
+    """Callers that do not classify still work; everything is simply non-video."""
+    pins, _, _ = upd([], ["10.9.9.9"])
+    assert pins[0].video is False
+
+
+def test_video_flag_survives_persistence(tmp_path):
+    from safehouse_ytbudget.pins import load, save
+    p = tmp_path / "pins.json"
+    save(p, [Pin(ip="10.1.0.1", first_seen=NOW, last_active=NOW, video=True)])
+    again = load(p)
+    assert again[0].video is True

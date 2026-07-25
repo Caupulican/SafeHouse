@@ -46,6 +46,12 @@ DNS_EVENT_ID = 3008
 # the two pin the same addresses during the shadow-mode overlap.
 YT_NAME = re.compile(r"googlevideo|youtube|ytimg|ggpht|yt3", re.IGNORECASE)
 
+# The subset that actually carries video bytes. Everything else in the family -- ytimg
+# thumbnails, ggpht avatars, the API, the page itself -- is small and resolves
+# constantly, so without this distinction it crowds the video endpoint out of the
+# 32-filter budget and the meter goes blind. See pins.update().
+YT_VIDEO_NAME = re.compile(r"googlevideo", re.IGNORECASE)
+
 FIREWALL_RULE = "SafeHouse: YouTube budget block"
 PKTMON_FILTER_TAG = "SafeHouseYB"
 MAX_FILTERS = 32
@@ -75,8 +81,14 @@ def _run(args: list[str], timeout: int = 30) -> tuple[int, str]:
 # --- pure parsers (tested on Linux against real captured output) -------------
 
 
-def parse_dns_events(xml_text: str, name_pattern: re.Pattern[str] = YT_NAME) -> list[str]:
-    """Extract answer IPs for matching query names from wevtutil XML output.
+def parse_dns_events(
+    xml_text: str, name_pattern: re.Pattern[str] = YT_NAME
+) -> list[tuple[str, bool]]:
+    """Extract (answer IP, is_video) for matching query names from wevtutil XML output.
+
+    `is_video` marks an address resolved from a googlevideo name, i.e. one that carries
+    actual video rather than thumbnails or API chatter. The pin set uses it to decide
+    what survives the 32-filter cap.
 
     wevtutil emits a bare sequence of <Event> elements with no document root, so they
     are wrapped before parsing.
@@ -88,8 +100,8 @@ def parse_dns_events(xml_text: str, name_pattern: re.Pattern[str] = YT_NAME) -> 
     except ElementTree.ParseError:
         return []
 
-    found: list[str] = []
-    seen: set[str] = set()
+    found: list[tuple[str, bool]] = []
+    seen: dict[str, int] = {}
     for event in root.iter(f"{_EVT_NS}Event"):
         data = {
             d.get("Name"): (d.text or "")
@@ -98,14 +110,23 @@ def parse_dns_events(xml_text: str, name_pattern: re.Pattern[str] = YT_NAME) -> 
         query = data.get("QueryName", "")
         if not query or not name_pattern.search(query):
             continue
+        is_video = bool(YT_VIDEO_NAME.search(query))
         for token in data.get("QueryResults", "").split(";"):
             token = token.strip()
             if not token or token.lower().startswith("type:"):
                 continue  # a CNAME hop, not an address
             ip = normalise_ip(token)
-            if ip and ip not in seen:
-                seen.add(ip)
-                found.append(ip)
+            if not ip:
+                continue
+            if ip in seen:
+                # One address can be answered for both a video and a non-video name.
+                # Video wins: losing the flag would put it back at the front of the
+                # eviction queue.
+                if is_video:
+                    found[seen[ip]] = (ip, True)
+                continue
+            seen[ip] = len(found)
+            found.append((ip, is_video))
     return found
 
 
@@ -209,7 +230,7 @@ class WindowsPlatform:
 
     # --- DNS -----------------------------------------------------------------
 
-    def resolved_youtube_ips(self, since_epoch: int) -> list[str]:
+    def resolved_youtube_ips(self, since_epoch: int) -> list[tuple[str, bool]]:
         window_ms = max(1000, (self.now_epoch() - since_epoch) * 1000)
         query = (
             f"*[System[EventID={DNS_EVENT_ID} and "
@@ -256,6 +277,9 @@ class WindowsPlatform:
 
         Counters-only (`start -c -o`) means per-component byte counters and no packet
         capture to disk, so the overhead stays negligible on a child's gaming PC.
+
+        Always returns True: tearing the session down restarts the counter whether or
+        not the rebuild then succeeded, so the caller must drop its baseline either way.
         """
         self.stop_metering()
         if not ips:
@@ -264,10 +288,7 @@ class WindowsPlatform:
         for index, ip in enumerate(ips[:MAX_FILTERS], start=1):
             _run([str(PKTMON), "filter", "add", f"{PKTMON_FILTER_TAG}{index}", "-i", ip])
         rc, _ = _run([str(PKTMON), "start", "-c", "-o"])
-        if rc != 0:
-            self._metered = []
-            return False
-        self._metered = list(ips[:MAX_FILTERS])
+        self._metered = list(ips[:MAX_FILTERS]) if rc == 0 else []
         return True
 
     def stop_metering(self) -> None:

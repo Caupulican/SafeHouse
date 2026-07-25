@@ -28,23 +28,23 @@ PKTMON_JSON = (FIXTURES / "pktmon-counters.json").read_text(encoding="utf-8", er
 
 
 def test_extracts_ips_from_real_capture():
-    ips = parse_dns_events(DNS_XML)
-    assert ips, "the fixture contains YouTube lookups, so this must not be empty"
-    assert all(":" in ip or ip.count(".") == 3 for ip in ips)
+    found = parse_dns_events(DNS_XML)
+    assert found, "the fixture contains YouTube lookups, so this must not be empty"
+    assert all(":" in ip or ip.count(".") == 3 for ip, _ in found)
 
 
 def test_ignores_non_youtube_lookups():
     """The same capture contains Steam, Epic, Blizzard and Microsoft telemetry. None of
     it may be pinned, or unrelated traffic would burn the budget."""
-    only_steam = parse_dns_events(DNS_XML, re.compile(r"steamserver", re.IGNORECASE))
-    youtube = parse_dns_events(DNS_XML)
-    assert set(only_steam).isdisjoint(set(youtube))
+    only_steam = {ip for ip, _ in parse_dns_events(DNS_XML, re.compile(r"steamserver", re.IGNORECASE))}
+    youtube = {ip for ip, _ in parse_dns_events(DNS_XML)}
+    assert only_steam.isdisjoint(youtube)
 
 
 def test_drops_cname_hops():
     """Real answers interleave `type: 5 <name>` CNAME tokens with addresses."""
     assert "type: 5 restrictmoderate.youtube.com" in DNS_XML
-    ips = parse_dns_events(DNS_XML)
+    ips = [ip for ip, _ in parse_dns_events(DNS_XML)]
     assert not any("youtube.com" in ip for ip in ips)
     assert not any(ip.startswith("type") for ip in ips)
 
@@ -57,11 +57,11 @@ def test_unmaps_ipv4_mapped_answers():
         "<Data Name='QueryResults'>::ffff:142.250.1.1;</Data>"
         "</EventData></Event>"
     )
-    assert parse_dns_events(xml) == ["142.250.1.1"]
+    assert parse_dns_events(xml) == [("142.250.1.1", False)]
 
 
 def test_deduplicates_across_events():
-    ips = parse_dns_events(DNS_XML)
+    ips = [ip for ip, _ in parse_dns_events(DNS_XML)]
     assert len(ips) == len(set(ips))
 
 
@@ -151,3 +151,38 @@ def test_survives_localised_values():
     not its keys."""
     assert '"Type":"Fluxos"' in PKTMON_JSON
     assert parse_pktmon_counters(PKTMON_JSON) is not None
+
+
+# --- video classification ----------------------------------------------------
+
+
+def _event(name: str, results: str) -> str:
+    return (
+        "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>"
+        "<System><EventID>3008</EventID></System><EventData>"
+        f"<Data Name='QueryName'>{name}</Data>"
+        f"<Data Name='QueryResults'>{results}</Data>"
+        "</EventData></Event>"
+    )
+
+
+def test_googlevideo_answers_are_flagged_as_video():
+    """Only googlevideo carries the actual stream; it must survive the 32-filter cap."""
+    out = parse_dns_events(_event("rr3---sn-abc.googlevideo.com", "142.250.1.1;"))
+    assert out == [("142.250.1.1", True)]
+
+
+def test_thumbnail_and_api_answers_are_not_video():
+    for name in ("i.ytimg.com", "yt3.ggpht.com", "www.youtube.com",
+                 "youtubei.googleapis.com"):
+        out = parse_dns_events(_event(name, "142.250.1.1;"))
+        assert out == [("142.250.1.1", False)], name
+
+
+def test_video_flag_wins_when_one_address_serves_both():
+    """Losing the flag would push a live video endpoint back to the front of the
+    eviction queue the moment a thumbnail resolved to the same address."""
+    xml = _event("i.ytimg.com", "142.250.1.1;") + _event("x.googlevideo.com", "142.250.1.1;")
+    assert parse_dns_events(xml) == [("142.250.1.1", True)]
+    xml_rev = _event("x.googlevideo.com", "142.250.1.1;") + _event("i.ytimg.com", "142.250.1.1;")
+    assert parse_dns_events(xml_rev) == [("142.250.1.1", True)]

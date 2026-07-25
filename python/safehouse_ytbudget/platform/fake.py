@@ -50,9 +50,10 @@ class FakePlatform:
     def hosts_blocked(self) -> bool:
         return self._hosts_blocked
 
-    def resolved_youtube_ips(self, since_epoch: int) -> list[str]:
+    def resolved_youtube_ips(self, since_epoch: int) -> list[tuple[str, bool]]:
         self.calls.append(f"resolved_youtube_ips(since={since_epoch})")
-        return list(self.resolved)
+        # Tests may set plain IPs or (ip, is_video) pairs.
+        return [(r, False) if isinstance(r, str) else r for r in self.resolved]
 
     def inbound_bytes(self) -> int | None:
         return self.bytes_counter
