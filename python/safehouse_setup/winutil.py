@@ -60,6 +60,13 @@ def run(args: list[str], timeout: int = 120, check: bool = False) -> tuple[int, 
             [str(a) for a in args],
             capture_output=True,
             text=True,
+            # Windows console tools emit the OEM code page, not UTF-8, and Python
+            # otherwise decodes with the ANSI code page and raises. On a non-English
+            # machine that killed the reader thread outright: netsh output on a pt-BR
+            # install contains bytes cp1252 cannot map. Never let an accented character
+            # in a localised message take down a host-configuration run.
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )

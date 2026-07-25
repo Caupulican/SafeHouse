@@ -142,15 +142,13 @@ if ($SkipWsl) {
 # --- 2. Point Windows at the WSL resolver ------------------------------------
 Write-Step 'Pointing Windows DNS at the WSL resolver...'
 if ($WhatIf) {
-    Write-Info 'would run windows\set-dns.ps1 (adapter DNS + global NRPT rule)'
+    Write-Info 'would configure DNS via safehouse_setup.dns (adapter + NRPT, with rollback)'
 } else {
-    $setDns = Join-Path $RepoDir 'windows\set-dns.ps1'
-    if (Test-Path $setDns) {
-        try {
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $setDns
-            Write-Ok 'adapter DNS + NRPT rule applied'
-        } catch { Write-Fail "set-dns.ps1 failed: $($_.Exception.Message)" }
-    } else { Write-Warn "not found: $setDns" }
+    # DNS configuration lives in Python now (safehouse_setup.dns), which verifies
+    # resolution afterwards and rolls its own NRPT rule back if the machine cannot
+    # resolve. Run after the runtime is vendored.
+    Write-Info 'deferred until the Python runtime is in place (step 4)'
+    $script:DeferredDns = $true
 }
 
 # --- 3. Stage the Windows scripts -------------------------------------------
@@ -165,6 +163,10 @@ if ($WhatIf) {
     $pyPkg = Join-Path $RepoDir 'python\safehouse_ytbudget'
     if (Test-Path $pyPkg) {
         Copy-Item -Path $pyPkg -Destination (Join-Path $StageDir 'windows\youtube-budget') -Recurse -Force
+        $setupPkg = Join-Path $RepoDir 'python\safehouse_setup'
+        if (Test-Path $setupPkg) {
+            Copy-Item -Path $setupPkg -Destination (Join-Path $StageDir 'windows\youtube-budget') -Recurse -Force
+        }
         foreach ($f in @('install.py', 'adguard_daily_reset.py')) {
             $src = Join-Path $RepoDir "python\$f"
             if (Test-Path $src) { Copy-Item $src (Join-Path $StageDir 'windows\youtube-budget') -Force }
@@ -205,6 +207,16 @@ if (Test-Path $pyExe) {
         }
         Write-Ok "vendored Python $pyVer"
     } catch { Write-Fail "Python download failed: $($_.Exception.Message)" }
+}
+
+# --- 4b. DNS (deferred until the runtime exists) -----------------------------
+if ($script:DeferredDns -and -not $WhatIf) {
+    Write-Step 'Configuring Windows DNS (Python)...'
+    if (Test-Path $pyExe) {
+        $out = & $pyExe -c "from safehouse_setup import dns; import json; print(json.dumps(dns.apply()))" 2>&1
+        if ($LASTEXITCODE -eq 0) { Write-Ok "DNS configured: $out" }
+        else { Write-Fail "DNS configuration failed: $out" }
+    } else { Write-Fail 'Python runtime missing; cannot configure DNS' }
 }
 
 # --- 5. Defender exclusions --------------------------------------------------
@@ -255,13 +267,11 @@ Write-Step 'Applying the Opera GX lockdown policy...'
 if ($WhatIf) {
     Write-Info 'would run windows\opera-policy.ps1'
 } else {
-    $opera = Join-Path $StageDir 'windows\opera-policy.ps1'
-    if (Test-Path $opera) {
-        try {
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $opera
-            Write-Ok 'Opera GX VPN + DoH pinned off by machine policy'
-        } catch { Write-Warn "opera-policy.ps1 failed: $($_.Exception.Message)" }
-    } else { Write-Warn "not found: $opera" }
+    if (Test-Path $pyExe) {
+        $rc = & $pyExe -c "from safehouse_setup import browser; browser.apply(); browser.forbid_vpn_in_profiles(); print('ok')" 2>&1
+        if ($LASTEXITCODE -eq 0) { Write-Ok 'Opera GX VPN + DoH pinned off by machine policy' }
+        else { Write-Warn "browser policy failed: $rc" }
+    } else { Write-Warn 'Python runtime missing; skipped' }
 }
 
 # --- 8. Play Games firewall --------------------------------------------------

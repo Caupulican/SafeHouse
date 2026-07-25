@@ -21,6 +21,7 @@ catastrophe.
 
 from __future__ import annotations
 
+import json
 import re
 import socket
 import time
@@ -46,42 +47,47 @@ def default_route() -> tuple[int | None, str | None]:
     """(interface index, gateway) for the active IPv4 default route.
 
     The gateway doubles as the failsafe resolver: if the filtering stack cannot answer,
-    pointing at the router is far better than pointing at nothing.
+    pointing at the router beats pointing at nothing.
+
+    Uses `Get-NetRoute` and asks for JSON rather than scraping `netsh`. Column layout
+    and headings in netsh output are LOCALISED, so a text parser silently returns
+    nothing on a non-English Windows -- which is exactly what happened here on a pt-BR
+    machine, and would have aborted DNS setup with a misleading "no default route".
     """
-    rc, out = run([NETSH, "interface", "ipv4", "show", "route"])
-    if rc != 0:
+    rc, out = powershell(
+        "Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' "
+        "-ErrorAction SilentlyContinue | "
+        "Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } | "
+        "Sort-Object RouteMetric | Select-Object -First 1 "
+        "InterfaceIndex,NextHop | ConvertTo-Json -Compress"
+    )
+    if rc != 0 or not out.strip():
         return None, None
-    best = None
-    for line in out.splitlines():
-        parts = line.split()
-        # Prefix  Idx  Metric  Gateway/Interface ...
-        if len(parts) < 6 or "0.0.0.0/0" not in parts:
-            continue
-        try:
-            idx_pos = parts.index("0.0.0.0/0")
-            metric = int(parts[idx_pos - 1])
-            iface = int(parts[idx_pos + 1])
-            gateway = parts[idx_pos + 2]
-        except (ValueError, IndexError):
-            continue
-        if not re.match(r"^\d+\.\d+\.\d+\.\d+$", gateway) or gateway == "0.0.0.0":
-            continue
-        if best is None or metric < best[0]:
-            best = (metric, iface, gateway)
-    if best is None:
+    try:
+        obj = json.loads(out.strip())
+    except ValueError:
         return None, None
-    return best[1], best[2]
+    if isinstance(obj, list):
+        obj = obj[0] if obj else {}
+    index = obj.get("InterfaceIndex")
+    gateway = obj.get("NextHop")
+    if not isinstance(index, int) or not isinstance(gateway, str):
+        return None, None
+    if not re.match(r"^\d+\.\d+\.\d+\.\d+$", gateway):
+        return None, None
+    return index, gateway
 
 
 def interface_name(index: int) -> str | None:
-    rc, out = run([NETSH, "interface", "ipv4", "show", "interfaces"])
+    """Adapter name for an interface index. Structured, for the same locale reason."""
+    rc, out = powershell(
+        f"Get-NetAdapter -InterfaceIndex {int(index)} -ErrorAction SilentlyContinue | "
+        "Select-Object -First 1 -ExpandProperty Name"
+    )
     if rc != 0:
         return None
-    for line in out.splitlines():
-        parts = line.split(None, 4)
-        if len(parts) == 5 and parts[0] == str(index):
-            return parts[4].strip()
-    return None
+    name = out.strip().splitlines()
+    return name[0].strip() if name and name[0].strip() else None
 
 
 def set_adapter_dns(iface: str, server: str) -> bool:
@@ -123,10 +129,13 @@ def nrpt_servers() -> list[str]:
 
     Used to verify, rather than assume, that the rule took effect.
     """
+    # NameServers holds IPAddress objects, and letting PowerShell format them prints
+    # every property on its own line rather than the address. Cast explicitly.
     rc, out = powershell(
         "Get-DnsClientNrptRule -ErrorAction SilentlyContinue | "
         f"Where-Object {{ $_.Comment -eq '{NRPT_COMMENT}' }} | "
-        "Select-Object -ExpandProperty NameServers"
+        "Select-Object -ExpandProperty NameServers | "
+        "ForEach-Object { $_.IPAddressToString }"
     )
     if rc != 0:
         return []
