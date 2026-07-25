@@ -28,3 +28,9 @@ Thumbs.db
 # Python
 __pycache__/
 *.pyc
+.venv*/
+.pytest_cache/
+
+# Dev-only tooling. The watcher runs on a vendored embeddable Python with the stdlib
+# only, so this is a local convenience, not part of the deployable artifact.
+requirements-dev.txt

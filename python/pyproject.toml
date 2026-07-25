@@ -1,0 +1,11 @@
+[project]
+name = "safehouse-ytbudget"
+version = "0.1.0"
+description = "SafeHouse daily YouTube watch-time budget (Windows watcher)"
+requires-python = ">=3.11"
+# No runtime dependencies, ever. The watcher ships on a vendored embeddable Python
+# distribution and must start as SYSTEM at boot with nothing installed.
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
