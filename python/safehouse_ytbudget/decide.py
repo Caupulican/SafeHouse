@@ -41,6 +41,11 @@ class Observation:
     pinned_ips: tuple[str, ...] = ()
     # IPs currently covered by the endpoint firewall rules.
     firewall_ips: tuple[str, ...] = ()
+    # The resolver (AdGuard Home) is currently refusing YouTube, or None when that lane
+    # is disarmed or unreachable and therefore cannot be judged. None makes the layer
+    # invisible to the reconcile below, which is deliberate: a lane we cannot read is
+    # also a lane we cannot fix, and retrying it every tick would only spam the log.
+    resolver_blocked: bool | None = None
 
 
 # --- actions -----------------------------------------------------------------
@@ -123,13 +128,35 @@ def decide(state: State, cfg: Config, obs: Observation) -> tuple[State, list[Act
     over_budget = new.seconds_used >= limit
     want_blocked = over_budget or new.manual_block
 
+    # Enforcement runs on more than one layer, and they drift independently -- the
+    # resolver can be restarted, or edited by hand in its dashboard, while the hosts file
+    # sits untouched. So the two questions are asked with opposite strictness:
+    #
+    #   to stay blocked  -> EVERY visible layer must be blocking (all)
+    #   to stay allowed  -> NO layer may be blocking          (any)
+    #
+    # Reading a single OR'd boolean for both, as this did originally, hides exactly the
+    # failures that matter. If the resolver was unreachable when the budget ran out, the
+    # hosts file alone answered "blocked" and the resolver was never retried for the rest
+    # of the day -- which is precisely how the Play Games VM kept streaming while every
+    # log line said BLOCKED. Both directions are idempotent per layer, so re-applying
+    # costs an "ALREADY" and converges.
+    layers = [obs.hosts_blocked]
+    if obs.resolver_blocked is not None:
+        layers.append(obs.resolver_blocked)
+    fully_blocked = all(layers)
+    any_blocked = any(layers)
+
     if want_blocked:
-        if not obs.hosts_blocked:
+        if not fully_blocked:
             # "reblock" means it was supposed to be there already and something removed
             # it -- worth flagging loudly in the log. After a reset there is no such
             # expectation, so a fresh day crossing the limit is a plain "enforce".
             expected_block = state.blocked_by_budget or state.manual_block
             reason = "reblock" if (expected_block and not did_reset) else "enforce"
+            # Note this fires when a layer is *partially* applied too, e.g. hosts is
+            # blocking but the resolver came back up clear. That is a reblock, not a
+            # fresh enforce, and the log should say so.
             actions.append(BlockHosts(reason=reason))
             actions.append(FlushDns())
         new.blocked_by_budget = over_budget
@@ -141,7 +168,7 @@ def decide(state: State, cfg: Config, obs: Observation) -> tuple[State, list[Act
             actions.append(SetFirewall(ips=tuple(sorted(obs.pinned_ips))))
 
     else:
-        if obs.hosts_blocked:
+        if any_blocked:
             # Removing only SafeHouse's own auto-block marker is the platform layer's
             # job; a block applied by hand with `safehouse_setup toggle` carries a different
             # marker and is left alone there.

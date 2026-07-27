@@ -186,3 +186,43 @@ def test_video_flag_wins_when_one_address_serves_both():
     assert parse_dns_events(xml) == [("142.250.1.1", True)]
     xml_rev = _event("x.googlevideo.com", "142.250.1.1;") + _event("i.ytimg.com", "142.250.1.1;")
     assert parse_dns_events(xml_rev) == [("142.250.1.1", True)]
+
+
+# --- netsh address echo ------------------------------------------------------
+# netsh does not return addresses in the shape it was given them, and the mismatch made
+# firewall_ips() return nothing at all -- so the rule was torn down and rebuilt every
+# tick, each rebuild leaving a gap where nothing was blocked.
+
+
+def test_ipv4_host_comes_back_with_a_prefix_length():
+    from safehouse_ytbudget.platform.windows import parse_netsh_address
+    assert parse_netsh_address("142.250.79.206/32") == "142.250.79.206"
+
+
+def test_ipv6_host_comes_back_as_a_degenerate_range():
+    from safehouse_ytbudget.platform.windows import parse_netsh_address
+    assert parse_netsh_address(
+        "2800:3f0:4001:816::200e-2800:3f0:4001:816::200e") == "2800:3f0:4001:816::200e"
+
+
+def test_plain_addresses_still_parse():
+    from safehouse_ytbudget.platform.windows import parse_netsh_address
+    assert parse_netsh_address("8.8.8.8") == "8.8.8.8"
+    assert parse_netsh_address(" 2a00:1450:4007:2d::6 ") == "2a00:1450:4007:2d::6"
+
+
+def test_non_addresses_are_rejected():
+    from safehouse_ytbudget.platform.windows import parse_netsh_address
+    for junk in ("", "   ", "Qualquer", "Any", "Domínio", "NotRequired"):
+        assert parse_netsh_address(junk) is None
+
+
+def test_the_real_localised_remoteip_line_round_trips():
+    """Verbatim from a pt-BR machine -- the line that was silently parsing to nothing."""
+    from safehouse_ytbudget.platform.windows import parse_netsh_address
+    value = ("0.0.0.0/32,142.250.79.206/32,172.217.28.206/32,216.239.38.119/32,"
+             "2001:4860:4802:32::77-2001:4860:4802:32::77,"
+             "2800:3f0:4001:816::200e-2800:3f0:4001:816::200e,::-::")
+    got = [ip for ip in (parse_netsh_address(t) for t in value.split(",")) if ip]
+    assert got == ["0.0.0.0", "142.250.79.206", "172.217.28.206", "216.239.38.119",
+                   "2001:4860:4802:32::77", "2800:3f0:4001:816::200e", "::"]

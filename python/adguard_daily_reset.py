@@ -1,9 +1,15 @@
 """Lift the AdGuard Home YouTube block once the day it belongs to has passed.
 
-Needed only during the transition. The PowerShell watcher is still the enforcing one and
-knows nothing about AdGuard Home, so a block applied at the resolver stays applied
-forever unless something clears it -- which would silently turn "no more YouTube today"
-into "no more YouTube, ever".
+A **failsafe, independent of the watcher**. The watcher lifts both lanes itself on the
+first tick of a new day, so in normal operation this finds nothing to do. It exists for
+the case where the watcher is not running at all -- quarantined by antivirus, crash-looping,
+task unregistered -- because the failure mode it prevents is not "the budget is wrong",
+it is a resolver block applied last night that nothing ever clears, silently turning
+"no more YouTube today" into **"no more YouTube, ever"**.
+
+That asymmetry is the whole argument for keeping it: a watcher that dies while a block is
+applied fails *closed*, permanently, and a child has no way to report it that sounds
+different from ordinary enforcement.
 
 Runs from TWO triggers, and is safe on both because it is date-aware:
 
@@ -18,13 +24,10 @@ this only lifts it once that date is in the past.
 
     C:\\SafeHouse\\python\\python.exe adguard_daily_reset.py [--dry-run] [--force]
 
-Deliberately does NOT touch the hosts file: the PowerShell watcher owns that and its own
-date-based reset already handles it. Two things resetting one file is how they end up
-fighting.
-
-Once the Python watcher takes over enforcement this becomes redundant -- it drives both
-layers from the same decision and its own day reset lifts them together. Delete the task
-at cutover.
+Deliberately does NOT touch the hosts file. The watcher owns that, and a hosts block left
+behind is self-correcting anyway: the watcher's own date reset lifts it, and unlike the
+resolver lane a stale hosts block is visible in a file a parent can read and edit. Two
+things resetting one file is how they end up fighting.
 """
 
 from __future__ import annotations

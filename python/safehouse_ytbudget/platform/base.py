@@ -35,6 +35,21 @@ class Platform(Protocol):
     # --- observation ---------------------------------------------------------
 
     def hosts_blocked(self) -> bool:
+        """The hosts-file layer specifically -- NOT "is YouTube blocked somehow".
+
+        Each enforcement layer reports itself, because the reconcile needs to repair one
+        without being told the other is fine. Folding them into a single boolean here is
+        what let a dead resolver lane hide behind a healthy hosts file.
+        """
+        ...
+
+    def resolver_blocked(self) -> bool | None:
+        """The resolver (AdGuard Home) layer, or None when it is disarmed or unreachable.
+
+        None is not False. False means "asked, and it is letting YouTube through" and is
+        a repairable fault; None means the lane cannot be judged this tick, and the
+        reconcile skips it rather than looping on something it cannot change.
+        """
         ...
 
     def resolved_youtube_ips(self, since_epoch: int) -> list[tuple[str, bool]]:
@@ -113,6 +128,7 @@ class ReadOnlyPlatform:
     def today(self) -> str: return self._inner.today()
     def now_epoch(self) -> int: return self._inner.now_epoch()
     def hosts_blocked(self) -> bool: return self._inner.hosts_blocked()
+    def resolver_blocked(self) -> bool | None: return self._inner.resolver_blocked()
     def inbound_bytes(self) -> int | None: return self._inner.inbound_bytes()
     def firewall_ips(self) -> list[str]: return self._inner.firewall_ips()
 

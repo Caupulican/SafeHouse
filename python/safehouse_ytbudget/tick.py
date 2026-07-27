@@ -163,6 +163,7 @@ class Ticker:
                 today=self.platform.today(),
                 watching=sample_usable and self._meter.is_watching(),
                 hosts_blocked=self.platform.hosts_blocked(),
+                resolver_blocked=self.platform.resolver_blocked(),
                 pinned_ips=current,
                 firewall_ips=tuple(self.platform.firewall_ips()),
             ),
@@ -181,7 +182,14 @@ class Ticker:
                 case BlockHosts(reason=reason):
                     res = self.platform.block_hosts()
                     if reason == "reblock":
-                        self.platform.log(f"[reblock] hosts block had been removed - re-applied ({res})")
+                        # Deliberately does not name a layer: this fires when EITHER the
+                        # hosts file or the resolver has drifted open, and the status in
+                        # `res` already says which was repaired and which was ALREADY
+                        # fine. Saying "hosts block had been removed", as this once did,
+                        # sent a reader hunting through the hosts file when it was the
+                        # resolver that had been cleared.
+                        self.platform.log(
+                            f"[reblock] an enforcement layer had drifted open - re-applied ({res})")
                     else:
                         self.platform.log(
                             f"[enforce] budget reached ({st.seconds_used}s >= {limit_sec}s)"

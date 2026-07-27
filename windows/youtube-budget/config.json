@@ -1,7 +1,0 @@
-{
-  "limit_min": 180,
-  "sample_sec": 20,
-  "window_sec": 240,
-  "min_throughput_kbps": 64,
-  "pin_idle_expire_min": 30
-}

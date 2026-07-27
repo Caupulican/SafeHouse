@@ -136,12 +136,45 @@ part-way through a day, so its total is legitimately lower.
 > is deliberate (an ad break or buffer top-up must not stop the clock). The Python meter
 > does the same thing. Do not read those samples as a metering failure.
 
-**Phase 4 — cutover.** Only once the logs agree: stop and unregister
-`SafeHouse-YouTubeBudget`, register `SafeHouse-YouTubeBudget-Py` without `--shadow`,
-verify a forced block/unblock cycle live (the same test run on 2026-07-25).
+**Phase 4 — cutover. DONE 2026-07-27.** `SafeHouse-YouTubeBudget-Py` runs enforcing;
+`SafeHouse-YouTubeBudget` and `-PyShadow` are unregistered. `install.py` now does this
+itself, so a reinstall cannot leave two watchers racing.
 
-**Phase 5 — retire.** Keep the PowerShell scripts in the repo for one release as a
-documented rollback, then delete.
+**Phase 5 — retire. DONE 2026-07-27.** The PowerShell watcher, its control script, its
+installer and `common.ps1` are deleted. Git history is the rollback.
+
+### What actually forced the cutover, and what the shadow diff could not tell us
+
+The gate was "cut over once the logs agree". They never fully did, and the reasons turned
+out to be measurement artifacts of shadow mode rather than logic divergence:
+
+- **Separate state files.** Shadow writes `youtube-budget-py.json`, so every `grant` a
+  parent issued landed only in the PowerShell state. The diff then compared a bonused
+  budget against an un-bonused one and reported a "disqualifying" enforcement
+  disagreement. `tools/diff_watchers.py` compares raw `blocked` flags and cannot account
+  for this — a real limitation of the tooling built to be the gate.
+- **Shadow cannot meter properly, by design.** `pktmon` is one machine-wide session, so
+  shadow mode must not reconfigure filters (it wiped all 32 of the live watcher's, once).
+  It therefore reads whatever filter set the *other* watcher chose. Much of the `watching`
+  disagreement was that, not a difference in judgement.
+
+What settled it was not the diff at all: the PowerShell watcher **structurally cannot
+close the resolver lane**. It only knows the hosts file, and the hosts file is invisible
+to the Google Play Games VM. Staying on it meant leaving that hole open indefinitely, so
+the comparison stopped being the deciding question.
+
+Verified live immediately after cutover, on the real machine:
+
+- Both lanes report independently and correctly (`hosts_blocked=True`,
+  `resolver_blocked=True`).
+- The resolver lane was cleared out of band to reproduce the original failure; the next
+  tick detected and repaired it — `[reblock] an enforcement layer had drifted open -
+  re-applied (ALREADY; adguard=BLOCKED)` — within 20 seconds.
+- A latent bug surfaced in the process: `firewall_ips()` never parsed netsh's echoed
+  address forms (`1.2.3.4/32`, and IPv6 as a degenerate `addr-addr` range), so it always
+  returned empty, so the endpoint-firewall comparison always differed and the rule was
+  torn down and rebuilt **every 20-second tick** — each rebuild a window with nothing
+  blocked. Fixed (`parse_netsh_address`) and confirmed silent in the log afterwards.
 
 ## Improvements to make during the port (not straight transliteration)
 

@@ -72,11 +72,39 @@ AdGuard Home schedules are **time-of-day windows, not cumulative budgets.** Ther
 Microsoft Family Safety (see below). That cumulative budget is exactly what
 `windows/youtube-budget/` exists to provide, and it remains necessary.
 
-The intended end-state is therefore: the watcher keeps *metering* and owning the budget,
-but *enforces* by toggling AdGuard Home's YouTube rule for that client over the AdGuard
-Home REST API instead of splicing the Windows hosts file. That removes the two things
-that break it today — the hosts-file write (which is why Avast quarantines the script)
-and the hosts-file read path (which Avast's DoH bypasses anyway).
+## How the budget uses AdGuard Home — the resolver lane
+
+**Implemented and live.** The watcher meters and owns the budget, and when the budget
+runs out it enforces on *two* lanes: the Windows hosts file, and AdGuard Home's `youtube`
+blocked-service over the REST API. `python -m safehouse_ytbudget.cli status` reports both.
+
+The resolver lane is not a nicety. It is the only one that covers:
+
+- **`*.googlevideo.com`** — the per-session CDN hostnames carrying the video bytes. A
+  hosts file has no wildcards and structurally cannot block these.
+- **The Google Play Games VM.** `crosvm` runs its own resolver inside the guest and never
+  reads the Windows hosts file. Everything the hosts lane does is invisible to it.
+- **Every other client of the chain** — phones, tablets, a second PC.
+
+Credentials live in `C:\ProgramData\SafeHouse\adguard.json` (SYSTEM + Administrators
+only; this dashboard can switch off every filter in the stack). `python/install.py`
+writes it by reading the password `adguard/bootstrap.py` generated inside WSL. **If that
+file is missing the lane is disarmed**, and the installer exits 2, the watcher logs
+`[warn] resolver lane DISARMED`, and `status` prints `Resolver : NOT ARMED`.
+
+> **Why all three of those say it.** This shipped with the lane implemented but never
+> constructed by any caller. Nothing said so anywhere — and the daily lift task, which is
+> the *other* half of the pair, ran fine on its own and logged `[ok] AdGuard YouTube
+> block already lifted; nothing to do` every day. That reads like a healthy system. It
+> was reporting success at undoing something that had never once been done, while the
+> child watched YouTube in Play Games against a budget that said `BLOCKED`.
+
+The two lanes drift independently — AdGuard restarts, a parent edits the dashboard by
+hand — so the reconcile treats them asymmetrically: **every** visible lane must be
+blocking for the block to be considered applied, but **any** lane still blocking is
+enough to trigger a lift. A lane that cannot be read at all (resolver unreachable) is
+skipped rather than retried into a loop. See `decide()` in
+`python/safehouse_ytbudget/decide.py`.
 
 ## Hard prerequisite: close the DoH bypasses
 

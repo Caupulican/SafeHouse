@@ -142,6 +142,43 @@ class AdGuardClient:
         return "BLOCKED" if blocked else "UNBLOCKED"
 
 
+DEFAULT_CREDENTIALS = "adguard.json"
+
+
+def load_client(root: Path) -> tuple["AdGuardClient | None", str]:
+    """Build the resolver-lane client from `root/adguard.json`.
+
+    Returns (client, one-line status for the log). There is exactly one of these because
+    the lane has to be armed at *every* entry point: the watcher enforces on a timer, but
+    `ctl block` / `ctl allow` enforce too, and a parent typing `block` and getting only
+    the hosts file is the same silent half-measure from the other direction.
+
+    The status string is returned rather than logged here so the caller decides the
+    prefix -- but callers must log it. The whole failure this exists to prevent was
+    silent: the lane was never constructed, nothing said so, and the daily lift task
+    cheerfully reported "already lifted; nothing to do" every day for a block that had
+    never once been applied.
+    """
+    cfg = AdGuardConfig.from_file(root / DEFAULT_CREDENTIALS)
+    if cfg is None:
+        return None, (
+            f"resolver lane DISARMED - no usable {root / DEFAULT_CREDENTIALS}. "
+            "The hosts file only covers Windows applications; anything with its own "
+            "resolver (the Play Games VM above all) can still reach YouTube."
+        )
+    client = AdGuardClient(cfg)
+    reachable = client.is_blocked()
+    if reachable is None:
+        return client, (
+            f"resolver lane ARMED but {cfg.base_url} is not answering - "
+            "enforcement will retry every tick until it does"
+        )
+    return client, (
+        f"resolver lane ARMED at {cfg.base_url} (service={cfg.service_id}, "
+        f"currently {'blocking' if reachable else 'allowing'})"
+    )
+
+
 # --- which day the block belongs to ------------------------------------------
 # The resolver has no memory of *why* a service is blocked, so something has to record
 # it. Without this, a lift-on-startup task cannot tell "the block is left over from

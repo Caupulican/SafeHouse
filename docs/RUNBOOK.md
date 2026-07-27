@@ -71,23 +71,25 @@ day — correct even if the PC was off at midnight or off for days. Full detail 
 [../windows/youtube-budget/README.md](../windows/youtube-budget/README.md).
 - **Arm (ENABLES live enforcement, elevated PowerShell — self-elevates):**
   ```powershell
-  powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\youtube-budget\install-task.ps1
+  cd C:\SafeHouse\windows\youtube-budget
+  C:\SafeHouse\python\python.exe .\install.py
   ```
   Creates `C:\ProgramData\SafeHouse` (ACL: SYSTEM+Administrators full, **Users read-only**),
   seeds `config.json`, registers the **AtStartup** SYSTEM task, and starts it now. Ships
   **disarmed** — nothing blocks until you run this.
-- **Parent CLI** (`youtube-budget-ctl.ps1`; mutating verbs self-elevate via UAC, `status` is
-  read-only):
+- **Parent CLI** (`python -m safehouse_ytbudget.cli`; mutating verbs need elevation,
+  `status` is read-only):
   ```powershell
-  $ctl = 'C:\SafeHouse\windows\youtube-budget\youtube-budget-ctl.ps1'
-  powershell -ExecutionPolicy Bypass -File $ctl status         # used / remaining / limit / blocked today
-  powershell -ExecutionPolicy Bypass -File $ctl set-limit 90   # change the daily limit (today + config.json)
-  powershell -ExecutionPolicy Bypass -File $ctl grant 30       # +30 min today (unblocks if it frees budget)
-  powershell -ExecutionPolicy Bypass -File $ctl block          # force-block now
-  powershell -ExecutionPolicy Bypass -File $ctl allow          # override-unblock now
-  powershell -ExecutionPolicy Bypass -File $ctl reset          # zero today's usage + unblock
+  cd C:\SafeHouse\windows\youtube-budget
+  $py = 'C:\SafeHouse\python\python.exe'
+  & $py -m safehouse_ytbudget.cli status         # used / remaining / limit / blocked today
+  & $py -m safehouse_ytbudget.cli set-limit 90   # change the daily limit (today + config.json)
+  & $py -m safehouse_ytbudget.cli grant 30       # +30 min today (unblocks if it frees budget)
+  & $py -m safehouse_ytbudget.cli block          # force-block now
+  & $py -m safehouse_ytbudget.cli allow          # override-unblock now
+  & $py -m safehouse_ytbudget.cli reset          # zero today's usage + unblock
   ```
-- **Tune:** `C:\ProgramData\SafeHouse\config.json` — `limit_min` (60), `sample_sec` (20),
+- **Tune:** `C:\ProgramData\SafeHouse\config.json` — `limit_min` (180), `sample_sec` (20),
   `window_sec` (240, the sliding "is-active" window that bridges sparse DNS lookups).
   `limit_min`/`bonus` apply live; changing sample/window needs the task restarted.
 - **State + log:** `C:\ProgramData\SafeHouse\youtube-budget.json` and `…\youtube-budget.log`
@@ -97,7 +99,7 @@ day — correct even if the PC was off at midnight or off for days. Full detail 
   (`music.youtube.com` is in the shared block list). See the feature README.
 - **Disarm:** `Stop-ScheduledTask -TaskName SafeHouse-YouTubeBudget` (pause) or
   `Unregister-ScheduledTask -TaskName SafeHouse-YouTubeBudget -Confirm:$false` (remove); then
-  lift any active block with `… youtube-budget-ctl.ps1 allow`.
+  lift any active block with `python -m safehouse_ytbudget.cli allow`.
 - **Migration from the old WSL daemon:** arm the Windows task above, then retire the daemon
   on the WSL host: `sudo systemctl disable --now safehouse-youtube-budget.service`.
 

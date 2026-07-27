@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 from .config import Config, load as load_config
+from .platform.adguard import load_client as load_adguard
 from .platform.base import ReadOnlyPlatform
 from .platform.windows import WindowsPlatform
 from .tick import Paths, Ticker
@@ -61,11 +62,17 @@ def main(argv: list[str] | None = None) -> int:
     log_path = args.root / f"youtube-budget-python{'-shadow' if args.shadow else ''}.log"
     block_list = args.block_list or find_block_list(Path(__file__).resolve().parent.parent)
 
+    # Arm the resolver lane before the platform is built. Without it the hosts file is
+    # the only enforcement, and the hosts file is invisible to anything that does not use
+    # the Windows resolver -- which is exactly the Google Play Games VM.
+    adguard, adguard_status = load_adguard(args.root)
+
     real = WindowsPlatform(
         root=args.root,
         hosts_path=args.hosts,
         block_list=block_list,
         log_path=log_path,
+        adguard=adguard,
     )
     real.enable_dns_channel()
     if not args.shadow:
@@ -88,6 +95,10 @@ def main(argv: list[str] | None = None) -> int:
         f"[start] python watcher {mode} sample={cfg.sample_sec}s window={cfg.window_sec}s "
         f"limit={cfg.limit_min}m min_kbps={cfg.min_throughput_kbps} hosts={args.hosts}"
     )
+    # Loud on every start, at warn level when the lane is down. A disarmed resolver is a
+    # hole in the coverage, not a configuration nicety, and must never be inferable only
+    # from the absence of a line.
+    platform.log(("[start] " if adguard is not None else "[warn] ") + adguard_status)
 
     try:
         while True:

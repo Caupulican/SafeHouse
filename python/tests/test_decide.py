@@ -237,3 +237,100 @@ def test_decide_does_not_mutate_input_state():
 def test_limit_boundary_is_inclusive(used, expected):
     st, _ = decide(State(date=TODAY, seconds_used=used), CFG, obs())
     assert st.blocked_by_budget is expected
+
+
+# --- two enforcement layers --------------------------------------------------
+# Regression tests for the defect that let the Google Play Games VM stream YouTube for
+# an entire day while every log line read BLOCKED. The hosts file and the resolver drift
+# independently, and the original code OR'd them into one boolean, so a healthy hosts
+# file answered on behalf of a resolver lane that was never applied at all.
+
+OVER = 10_800  # exactly the 3h limit
+
+
+def test_resolver_lane_is_repaired_when_hosts_is_already_blocking():
+    """THE bug. Over budget, hosts blocking, resolver open -> must re-apply, not idle."""
+    st, acts = decide(
+        State(date=TODAY, seconds_used=OVER, blocked_by_budget=True),
+        CFG,
+        obs(hosts_blocked=True, resolver_blocked=False),
+    )
+    assert BlockHosts in kinds(acts), "a wide-open resolver must be repaired"
+    assert st.blocked_by_budget is True
+
+
+def test_hosts_lane_is_repaired_when_resolver_is_already_blocking():
+    """The mirror case: neither layer gets to answer for the other."""
+    _, acts = decide(
+        State(date=TODAY, seconds_used=OVER, blocked_by_budget=True),
+        CFG,
+        obs(hosts_blocked=False, resolver_blocked=True),
+    )
+    assert BlockHosts in kinds(acts)
+
+
+def test_both_layers_blocking_is_left_alone():
+    """Converged means quiet -- no action every 20s once both agree."""
+    _, acts = decide(
+        State(date=TODAY, seconds_used=OVER, blocked_by_budget=True),
+        CFG,
+        obs(hosts_blocked=True, resolver_blocked=True),
+    )
+    assert BlockHosts not in kinds(acts)
+    assert UnblockHosts not in kinds(acts)
+
+
+def test_partial_block_is_reported_as_a_reblock_not_a_fresh_enforce():
+    """The log has to distinguish "budget just ran out" from "a layer went missing"."""
+    _, acts = decide(
+        State(date=TODAY, seconds_used=OVER, blocked_by_budget=True),
+        CFG,
+        obs(hosts_blocked=True, resolver_blocked=False),
+    )
+    assert [a for a in acts if isinstance(a, BlockHosts)][0].reason == "reblock"
+
+
+def test_unreachable_resolver_does_not_force_a_permanent_reblock():
+    """None is unknown, not open. A lane we cannot read is one we cannot fix, and
+    retrying it every 20 seconds would bury the log in noise for an outage."""
+    _, acts = decide(
+        State(date=TODAY, seconds_used=OVER, blocked_by_budget=True),
+        CFG,
+        obs(hosts_blocked=True, resolver_blocked=None),
+    )
+    assert BlockHosts not in kinds(acts)
+
+
+def test_a_leftover_resolver_block_is_lifted_even_with_hosts_already_clear():
+    """Under budget with only the resolver still blocking. Under the old OR this read as
+    "not blocked" and the child lost YouTube for the rest of the day with the state file
+    insisting nothing was wrong."""
+    st, acts = decide(
+        State(date=TODAY, seconds_used=0),
+        CFG,
+        obs(hosts_blocked=False, resolver_blocked=True),
+    )
+    assert UnblockHosts in kinds(acts)
+    assert st.blocked_by_budget is False
+
+
+def test_day_reset_lifts_a_resolver_block_left_over_from_yesterday():
+    """The reboot-after-budget case: the block belongs to a day that has ended."""
+    _, acts = decide(
+        State(date="2026-07-24", seconds_used=OVER, blocked_by_budget=True),
+        CFG,
+        obs(today=TODAY, hosts_blocked=False, resolver_blocked=True),
+    )
+    assert ResetDay in kinds(acts)
+    assert UnblockHosts in kinds(acts)
+
+
+def test_a_disarmed_lane_behaves_exactly_like_the_single_layer_original():
+    """Default None must not change any pre-existing decision."""
+    for hosts in (True, False):
+        for used in (0, OVER):
+            a = decide(State(date=TODAY, seconds_used=used), CFG,
+                       obs(hosts_blocked=hosts))
+            b = decide(State(date=TODAY, seconds_used=used), CFG,
+                       obs(hosts_blocked=hosts, resolver_blocked=hosts))
+            assert kinds(a[1]) == kinds(b[1])

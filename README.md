@@ -151,7 +151,7 @@ Verify:
 ```powershell
 Resolve-DnsName doubleclick.net    # -> 0.0.0.0        (filtering works)
 Resolve-DnsName github.com         # -> a real address (nothing else broke)
-C:\SafeHouse\windows\youtube-budget\youtube-budget-ctl.ps1 status
+C:\SafeHouse\python\python.exe -m safehouse_ytbudget.cli status
 ```
 
 ---
@@ -168,7 +168,7 @@ Microsoft Family Safety. Both do time-of-day windows or total device screen time
 YB_LIMIT_MIN=180
 ```
 
-then re-run `install-task.ps1`. Full key documentation in `.env.example`.
+then re-run `install.py`. Full key documentation in `.env.example`.
 
 ### How the metering works
 
@@ -197,19 +197,46 @@ behaviour above.
 ### Control
 
 ```powershell
-$ctl = 'C:\SafeHouse\windows\youtube-budget\youtube-budget-ctl.ps1'
+cd C:\SafeHouse\windows\youtube-budget
+$py = 'C:\SafeHouse\python\python.exe'
 
-& $ctl status            # used / limit / remaining / what is blocking
-& $ctl grant 30          # +30 minutes, today only
-& $ctl set-limit 120     # change the daily limit
-& $ctl block             # block now and hold it
-& $ctl allow             # lift the block
-& $ctl reset             # zero today's usage
+& $py -m safehouse_ytbudget.cli status            # used / limit / remaining / what is blocking
+& $py -m safehouse_ytbudget.cli grant 30          # +30 minutes, today only
+& $py -m safehouse_ytbudget.cli set-limit 120     # change the daily limit
+& $py -m safehouse_ytbudget.cli block             # block now and hold it
+& $py -m safehouse_ytbudget.cli allow             # lift the block
+& $py -m safehouse_ytbudget.cli reset             # zero today's usage
 ```
 
 Enforcement **reconciles every tick**, so if something removes the block it goes back.
 That matters: the original bug in this tool was latching on the transition, so once
 "blocked" was recorded, nothing ever re-checked it.
+
+### Blocking happens on two lanes, and you need both
+
+| Lane | Covers | Blind to |
+|---|---|---|
+| **Hosts file** | programs using the Windows resolver — Edge, Chrome, Opera GX | anything with its own resolver; wildcard CDN names |
+| **AdGuard Home** | every client of the DNS chain, including the **Google Play Games VM**, phones, tablets | clients that do not use the chain |
+
+A hosts file has no wildcards, so it cannot express `*.googlevideo.com` — the per-session
+hostnames that carry the actual video. And it is invisible to the Google Play Games VM,
+which runs its own resolver inside `crosvm` and never reads it. The resolver lane covers
+both, and needs no IP tracking to do it.
+
+`status` prints a **`Resolver`** line for exactly this reason:
+
+```
+Hosts file : YouTube section blocked
+Resolver   : AdGuard Home blocking YouTube (covers the Play Games VM)
+```
+
+If it says `NOT ARMED`, the budget is enforced for Windows applications only and YouTube
+inside Play Games keeps working regardless of how much time has been spent. This is not a
+hypothetical: it shipped that way. The lane existed in code and no caller ever built it,
+so for a day the child watched YouTube in Play Games while every log line and every
+status read `BLOCKED`. The watcher now reconciles the two lanes independently — if either
+drifts open while the other still blocks, the next tick repairs it and logs `[reblock]`.
 
 ---
 

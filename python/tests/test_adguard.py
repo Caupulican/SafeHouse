@@ -216,3 +216,58 @@ def test_config_corrupt_is_none(tmp_path):
     p = tmp_path / "adguard.json"
     p.write_text("{ not json")
     assert AdGuardConfig.from_file(p) is None
+
+
+# --- arming the lane ---------------------------------------------------------
+# The defect these cover was not in this module at all: every function above worked, and
+# no caller ever built the client. So these assert on the loader that both entry points
+# now share, and above all on it SAYING SO when the lane is not armed.
+
+
+def test_load_client_returns_none_and_says_why_when_unconfigured(tmp_path):
+    from safehouse_ytbudget.platform.adguard import load_client
+
+    client, status = load_client(tmp_path)
+    assert client is None
+    assert "DISARMED" in status
+    # The status is the only thing standing between a silent half-block and a parent
+    # noticing, so it must name the consequence, not just the missing file.
+    assert "adguard.json" in status
+    assert "Play Games" in status
+
+
+def test_load_client_arms_from_a_credentials_file(tmp_path, server):
+    from safehouse_ytbudget.platform.adguard import load_client
+
+    client, _ = server
+    (tmp_path / "adguard.json").write_text(json.dumps({
+        "base_url": client.cfg.base_url,
+        "username": "admin",
+        "password": "s3cret",
+    }))
+    loaded, status = load_client(tmp_path)
+    assert loaded is not None
+    assert "ARMED" in status
+    assert loaded.set_blocked(True) == "BLOCKED"
+
+
+def test_load_client_reports_an_unreachable_resolver_as_armed_but_silent(tmp_path):
+    from safehouse_ytbudget.platform.adguard import load_client
+
+    (tmp_path / "adguard.json").write_text(json.dumps({
+        "base_url": "http://127.0.0.1:9",  # discard port: nothing listens
+        "username": "admin",
+        "password": "x",
+    }))
+    loaded, status = load_client(tmp_path)
+    assert loaded is not None, "credentials exist, so the lane is armed and retryable"
+    assert "not answering" in status
+
+
+def test_load_client_treats_a_corrupt_credentials_file_as_disarmed(tmp_path):
+    from safehouse_ytbudget.platform.adguard import load_client
+
+    (tmp_path / "adguard.json").write_text("{ not json")
+    client, status = load_client(tmp_path)
+    assert client is None
+    assert "DISARMED" in status

@@ -92,20 +92,24 @@ powered off). Staged to
 `C:\SafeHouse\windows\youtube-budget\`. **YouTube is allowed by default** — nothing blocks
 until you arm it. Run in an **elevated PowerShell** (it self-elevates via UAC):
 ```powershell
-# ARM — registers SafeHouse-YouTubeBudget (AtStartup, SYSTEM, Restart=always) and starts it now:
-powershell -ExecutionPolicy Bypass -File C:\SafeHouse\windows\youtube-budget\install-task.ps1
+# ARM — registers SafeHouse-YouTubeBudget-Py (AtStartup, SYSTEM, Restart=always) and starts it now:
+cd C:\SafeHouse\windows\youtube-budget
+C:\SafeHouse\python\python.exe .\install.py
 ```
 It creates `C:\ProgramData\SafeHouse` with a locked-down ACL (SYSTEM + Administrators full,
 **Users read-only**, so a standard user can read but not reset the budget), seeds `config.json`
-(limit 30 min / sample 20 s / window 240 s), and registers the task.
+(limit 180 min / sample 20 s / window 240 s), provisions the AdGuard credentials so the
+resolver lane is armed, and registers the task. **Exit code 2 = armed but resolver-less**,
+which leaves the Google Play Games VM uncovered.
 ```powershell
-$ctl = 'C:\SafeHouse\windows\youtube-budget\youtube-budget-ctl.ps1'
-powershell -ExecutionPolicy Bypass -File $ctl status        # used / remaining / limit / blocked today
-powershell -ExecutionPolicy Bypass -File $ctl set-limit 90  # change the daily limit
-powershell -ExecutionPolicy Bypass -File $ctl grant 30      # +30 min today
-powershell -ExecutionPolicy Bypass -File $ctl allow         # lift a block now (override)
-Get-ScheduledTask -TaskName SafeHouse-YouTubeBudget         # verify
-Unregister-ScheduledTask -TaskName SafeHouse-YouTubeBudget -Confirm:$false   # disarm
+cd C:\SafeHouse\windows\youtube-budget
+$py = 'C:\SafeHouse\python\python.exe'
+& $py -m safehouse_ytbudget.cli status        # used / remaining / limit / blocked today
+& $py -m safehouse_ytbudget.cli set-limit 90  # change the daily limit
+& $py -m safehouse_ytbudget.cli grant 30      # +30 min today
+& $py -m safehouse_ytbudget.cli allow         # lift a block now (override)
+Get-ScheduledTask -TaskName SafeHouse-YouTubeBudget-Py      # verify
+Unregister-ScheduledTask -TaskName SafeHouse-YouTubeBudget-Py -Confirm:$false   # disarm
 ```
 **Migration** from the old WSL daemon: after arming the task above, retire the daemon on the
 WSL host — `sudo systemctl disable --now safehouse-youtube-budget.service`. Full detail:

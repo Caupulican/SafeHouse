@@ -79,6 +79,20 @@ def run(command: str, value: int | None, platform: Platform, *, root: Path,
             f"{'blocked' if platform.hosts_blocked() else 'allowed'}",
             f"  Firewall   : {len(platform.firewall_ips())} pinned endpoint(s) blocked",
         ]
+        # Report the resolver lane explicitly, including when it is missing. The hosts
+        # file covers only programs that use the Windows resolver; a parent reading
+        # "blocked" with no mention of the resolver has no way to know the Play Games VM
+        # is still wide open. Silence here is what hid that for a full day.
+        resolver = platform.resolver_blocked()
+        out.append(
+            "  Resolver   : " + {
+                True: "AdGuard Home blocking YouTube (covers the Play Games VM)",
+                False: "AdGuard Home is ALLOWING YouTube",
+            }.get(resolver, "NOT ARMED - only Windows apps are covered, the Play Games "
+                            "VM can still reach YouTube")
+        )
+        if resolver is not True:
+            out.append("               ^ coverage is incomplete; see docs/ADGUARD.md")
         return 0, out
 
     if command == "set-limit":
@@ -170,19 +184,27 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     from .watcher import DEFAULT_HOSTS, DEFAULT_ROOT, find_block_list
+    from .platform.adguard import load_client as load_adguard
     from .platform.windows import WindowsPlatform
 
     args = build_parser().parse_args(argv)
     root = args.root or DEFAULT_ROOT
+    # The same lane the watcher arms. A parent running `block` must get the resolver too,
+    # otherwise "blocked" means "blocked on this Windows box" and the tablet-shaped hole
+    # stays open with nothing on screen to say so.
+    adguard, adguard_status = load_adguard(root)
     platform = WindowsPlatform(
         root=root,
         hosts_path=DEFAULT_HOSTS,
         block_list=find_block_list(Path(__file__).resolve().parent.parent),
         log_path=root / "youtube-budget-python.log",
+        adguard=adguard,
     )
     code, lines = run(args.command, args.value, platform, root=root)
     for line in lines:
         print(line)
+    if adguard is None:
+        print(f"\nWARNING: {adguard_status}", file=sys.stderr)
     return code
 
 

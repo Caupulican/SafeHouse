@@ -60,6 +60,33 @@ MAX_FILTERS = 32
 _EVT_NS = "{http://schemas.microsoft.com/win/2004/08/events/event}"
 
 
+def parse_netsh_address(token: str) -> str | None:
+    """Turn one netsh `RemoteIP` token back into a plain address, or None.
+
+    netsh does not echo addresses in the form it was given them. A single host written
+    as `142.250.79.206` comes back as `142.250.79.206/32`, and a single IPv6 host comes
+    back as a degenerate range, `2800:3f0:4001:816::200e-2800:3f0:4001:816::200e`.
+    Neither parses as an address.
+
+    Parsing this wrongly is not cosmetic. `decide()` compares the pinned set against the
+    set already in the rule and only rewrites when they differ; a reader that always
+    returned nothing made every comparison unequal, so the rule was deleted and rebuilt
+    on every single 20-second tick -- two netsh invocations a tick, forever, with a
+    window in each where the endpoints were not blocked at all.
+    """
+    text = token.strip()
+    if not text:
+        return None
+    # Degenerate range: netsh's rendering of a single IPv6 host. Take the low end; a
+    # genuine range is not something this rule ever writes, so both ends are equal.
+    if "-" in text:
+        text = text.split("-", 1)[0].strip()
+    # Prefix length on a single host: /32 for IPv4, /128 for IPv6.
+    if "/" in text:
+        text = text.split("/", 1)[0].strip()
+    return normalise_ip(text)
+
+
 def _run(args: list[str], timeout: int = 30) -> tuple[int, str]:
     """Run a command, never raising. Returns (returncode, stdout).
 
@@ -199,20 +226,24 @@ class WindowsPlatform:
     # --- hosts ---------------------------------------------------------------
 
     def hosts_blocked(self) -> bool:
-        """True if EITHER layer is blocking.
+        """The hosts-file layer only.
 
-        The reconcile compares this against what it wants, so reporting only the hosts
-        file would make it re-apply a block the resolver already has -- and, worse,
-        report "unblocked" while the resolver still refused every lookup.
+        This used to return "either layer is blocking", which sounds safer and is not:
+        with the resolver lane down, the hosts file answered for both, the reconcile saw
+        "blocked" and never retried the resolver. Everything downstream of the Windows
+        resolver -- the Play Games VM above all -- kept streaming, and every log line
+        said BLOCKED. Each layer now reports only itself; `decide()` combines them.
         """
         try:
-            if hostsmod.is_blocked(hostsmod.read(self.hosts_path)):
-                return True
+            return hostsmod.is_blocked(hostsmod.read(self.hosts_path))
         except OSError:
-            pass
-        if self.adguard is not None:
-            return bool(self.adguard.is_blocked())
-        return False
+            return False
+
+    def resolver_blocked(self) -> bool | None:
+        """The AdGuard Home layer: True/False, or None if disarmed or unreachable."""
+        if self.adguard is None:
+            return None
+        return self.adguard.is_blocked()  # already None when unreachable
 
     def block_hosts(self) -> str:
         """Block by every means available, reporting each.
@@ -357,7 +388,7 @@ class WindowsPlatform:
             # The label is localised; the value shape is not, so parse addresses out of
             # any line whose value is a comma-separated list of them.
             for token in value.strip().split(","):
-                ip = normalise_ip(token.strip())
+                ip = parse_netsh_address(token)
                 if ip and ip not in found:
                     found.append(ip)
         return found

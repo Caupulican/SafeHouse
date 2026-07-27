@@ -238,12 +238,12 @@ if ($WhatIf) {
 Write-Step ("Installing the YouTube watch-time budget ({0} min/day)..." -f $LimitMinutes)
 $ybDir = Join-Path $StageDir 'windows\youtube-budget'
 if ($WhatIf) {
-    Write-Info "would write $ybDir\.env with YB_LIMIT_MIN=$LimitMinutes and run install-task.ps1"
+    Write-Info "would write $ybDir\.env with YB_LIMIT_MIN=$LimitMinutes and run install.py"
 } else {
     $envPath = Join-Path $ybDir '.env'
     @(
         '# SafeHouse - YouTube watch-time budget.',
-        '# Edit, then re-run install-task.ps1 to apply. See .env.example for every key.',
+        '# Edit, then re-run install.py to apply. See .env.example for every key.',
         '',
         "YB_LIMIT_MIN=$LimitMinutes",
         'YB_SAMPLE_SEC=20',
@@ -253,13 +253,24 @@ if ($WhatIf) {
     ) | Set-Content -Path $envPath -Encoding UTF8
     Write-Ok "wrote $envPath (YB_LIMIT_MIN=$LimitMinutes)"
 
-    $installTask = Join-Path $ybDir 'install-task.ps1'
-    if (Test-Path $installTask) {
-        try {
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installTask
-            Write-Ok 'watcher armed (SYSTEM, at boot, restart-on-failure)'
-        } catch { Write-Fail "install-task.ps1 failed: $($_.Exception.Message)" }
-    } else { Write-Fail "not found: $installTask" }
+    # The Python watcher, enforcing. It is the only one that drives BOTH enforcement
+    # lanes: the hosts file (Windows applications) and AdGuard Home (everything else,
+    # including the Play Games VM, which has its own resolver and cannot see a hosts
+    # file). install.py provisions the AdGuard credentials and retires the superseded
+    # PowerShell task itself. Exit code 2 means armed but resolver-less: a real gap in
+    # coverage, so it is surfaced here rather than buried in the transcript.
+    $installPy = Join-Path $ybDir 'install.py'
+    if ((Test-Path $installPy) -and (Test-Path $pyExe)) {
+        & $pyExe $installPy
+        switch ($LASTEXITCODE) {
+            0 { Write-Ok 'watcher armed (SYSTEM, at boot) - hosts + resolver lanes both live' }
+            2 { Write-Warn 'watcher armed, but the RESOLVER LANE IS DISARMED.'
+                Write-Warn '  Only Windows applications are covered. The Google Play Games VM'
+                Write-Warn '  bypasses the hosts file entirely and will still reach YouTube.'
+                Write-Warn '  Fix: run adguard/bootstrap.py in WSL, then re-run this installer.' }
+            default { Write-Fail "install.py failed (exit $LASTEXITCODE)" }
+        }
+    } else { Write-Fail "not found: $installPy or $pyExe" }
 }
 
 # --- 7. Opera GX policy ------------------------------------------------------

@@ -15,10 +15,14 @@ class FakePlatform:
         today: str = "2026-07-25",
         now: int = 1_800_000_000,
         hosts_blocked: bool = False,
+        resolver: bool | None = None,
     ) -> None:
         self._today = today
         self._now = now
         self._hosts_blocked = hosts_blocked
+        # None = resolver lane disarmed, which is the default so that tests written
+        # before the lane existed keep describing a single-layer machine.
+        self._resolver_blocked = resolver
 
         # Observation knobs a test drives.
         self.resolved: list[str] = []
@@ -26,6 +30,9 @@ class FakePlatform:
         self._firewall: list[str] = []
         self.metered: list[str] = []
         self.meter_ok = True
+        # Armed but not answering, e.g. AdGuard restarting. Reads report None (unknown)
+        # and writes fail, without the lane counting as disarmed.
+        self.resolver_unreachable = False
 
         # Recorded calls, for assertions.
         self.calls: list[str] = []
@@ -50,6 +57,11 @@ class FakePlatform:
     def hosts_blocked(self) -> bool:
         return self._hosts_blocked
 
+    def resolver_blocked(self) -> bool | None:
+        if self._resolver_blocked is None or self.resolver_unreachable:
+            return None
+        return self._resolver_blocked
+
     def resolved_youtube_ips(self, since_epoch: int) -> list[tuple[str, bool]]:
         self.calls.append(f"resolved_youtube_ips(since={since_epoch})")
         # Tests may set plain IPs or (ip, is_video) pairs.
@@ -70,18 +82,22 @@ class FakePlatform:
         return self.meter_ok
 
     def block_hosts(self) -> str:
+        """Drives every armed layer, like the real one -- each independently, so a tick
+        that finds one layer already applied still repairs the other."""
         self.calls.append("block_hosts")
-        if self._hosts_blocked:
-            return "ALREADY"
+        result = "ALREADY" if self._hosts_blocked else "BLOCKED"
         self._hosts_blocked = True
-        return "BLOCKED"
+        if self._resolver_blocked is not None and not self.resolver_unreachable:
+            self._resolver_blocked = True
+        return result
 
     def unblock_hosts(self, scope: str = "auto") -> str:
         self.calls.append(f"unblock_hosts(scope={scope})")
-        if not self._hosts_blocked:
-            return "NONE"
+        result = "UNBLOCKED" if self._hosts_blocked else "NONE"
         self._hosts_blocked = False
-        return "UNBLOCKED"
+        if self._resolver_blocked is not None and not self.resolver_unreachable:
+            self._resolver_blocked = False
+        return result
 
     def set_firewall(self, ips: list[str]) -> str:
         self.calls.append(f"set_firewall({sorted(ips)})")

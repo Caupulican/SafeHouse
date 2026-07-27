@@ -348,3 +348,55 @@ def test_real_platform_reset_still_happens_on_reconfigure(tmp_path):
     plat.advance(SAMPLE)
     r = t.run()
     assert r.watching is False
+
+
+# --- the resolver lane, end to end -------------------------------------------
+
+
+def test_tick_repairs_a_resolver_lane_that_drifted_open(tmp_path):
+    """A parent clears the YouTube service in the AdGuard dashboard while the child is
+    still over budget. The next tick must put it back rather than trust the hosts file."""
+    plat = FakePlatform(hosts_blocked=True, resolver=True)
+    t, _ = make(tmp_path, plat)
+    statemod.save(Paths.under(tmp_path).state,
+                  State(date=plat.today(), seconds_used=10_800, blocked_by_budget=True))
+
+    plat._resolver_blocked = False          # drift, out of band
+    t.run()
+    assert plat.resolver_blocked() is True, "the tick must re-apply the resolver block"
+    assert "block_hosts" in plat.calls
+
+
+def test_tick_does_not_thrash_while_the_resolver_is_unreachable(tmp_path):
+    """AdGuard restarting must not produce a block attempt every 20 seconds."""
+    plat = FakePlatform(hosts_blocked=True, resolver=True)
+    t, _ = make(tmp_path, plat)
+    statemod.save(Paths.under(tmp_path).state,
+                  State(date=plat.today(), seconds_used=10_800, blocked_by_budget=True))
+
+    plat.resolver_unreachable = True
+    for _ in range(5):
+        plat.advance(SAMPLE)
+        t.run()
+    assert plat.calls.count("block_hosts") == 0
+
+
+def test_tick_lifts_a_resolver_block_the_hosts_file_no_longer_mirrors(tmp_path):
+    """Fresh day, hosts already clean, resolver still blocking from yesterday."""
+    plat = FakePlatform(hosts_blocked=False, resolver=True)
+    t, _ = make(tmp_path, plat)
+    t.run()
+    assert plat.resolver_blocked() is False
+    assert any(c.startswith("unblock_hosts") for c in plat.calls)
+
+
+def test_shadow_mode_still_never_touches_the_resolver(tmp_path):
+    """Shadow must stay incapable of changing enforcement, resolver lane included."""
+    inner = FakePlatform(hosts_blocked=False, resolver=False)
+    plat = ReadOnlyPlatform(inner)
+    t, _ = make(tmp_path, plat)
+    statemod.save(Paths.under(tmp_path).state,
+                  State(date=inner.today(), seconds_used=10_800, blocked_by_budget=True))
+    t.run()
+    assert inner.resolver_blocked() is False, "shadow may not arm the resolver"
+    assert "block_hosts" not in inner.calls

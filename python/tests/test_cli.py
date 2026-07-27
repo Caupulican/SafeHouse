@@ -230,3 +230,35 @@ def test_commands_survive_a_missing_state_file(tmp_path):
     for cmd in ("status", "grant", "block", "allow", "reset"):
         code, _ = call(cmd, 5 if cmd == "grant" else None, plat, tmp_path)
         assert code == 0, cmd
+
+
+# --- the resolver lane is visible in status ----------------------------------
+# A parent reading "BLOCKED" while the Play Games VM streamed is the whole reason this
+# component exists. Status has to name the lane, especially when it is missing.
+
+
+def test_status_reports_a_blocking_resolver(tmp_path):
+    plat = FakePlatform(hosts_blocked=True, resolver=True)
+    _, lines = run("status", None, plat, root=tmp_path)
+    assert any("AdGuard Home blocking YouTube" in ln for ln in lines)
+
+
+def test_status_flags_a_resolver_that_is_letting_youtube_through(tmp_path):
+    plat = FakePlatform(hosts_blocked=True, resolver=False)
+    _, lines = run("status", None, plat, root=tmp_path)
+    assert any("ALLOWING YouTube" in ln for ln in lines)
+    assert any("coverage is incomplete" in ln for ln in lines)
+
+
+def test_status_says_loudly_when_the_lane_was_never_armed(tmp_path):
+    plat = FakePlatform(hosts_blocked=True)          # resolver=None -> disarmed
+    _, lines = run("status", None, plat, root=tmp_path)
+    assert any("NOT ARMED" in ln for ln in lines)
+    assert any("Play Games" in ln for ln in lines)
+
+
+def test_manual_block_drives_the_resolver_too(tmp_path):
+    """`ctl block` must not be a hosts-only half measure."""
+    plat = FakePlatform(hosts_blocked=False, resolver=False)
+    run("block", None, plat, root=tmp_path)
+    assert plat.resolver_blocked() is True
