@@ -1,9 +1,38 @@
 ---
 - name: Detect Windows user profile (via interop)
   ansible.builtin.shell:
-    cmd: "wslpath \"$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\\r')\""
+    cmd: >-
+      profile="$(/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
+      -NoProfile -NonInteractive -Command
+      '[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); $env:USERPROFILE'
+      | tr -d '\r')";
+      wslpath "$profile"
   register: winprofile
   changed_when: false
+  failed_when: winprofile.rc != 0 or winprofile.stdout | trim == ''
+
+# NAT keeps WSL isolated from Windows' DNS port. A Windows-native relay owns the changing
+# guest address, while disabling DNS tunneling prevents the original recursive outage.
+- name: Configure WSL networking for the DNS relay
+  ansible.builtin.lineinfile:
+    path: "{{ winprofile.stdout | trim }}/.wslconfig"
+    regexp: "^{{ item.split('=')[0] }}\\s*="
+    line: "{{ item }}"
+    insertafter: '^\\[wsl2\\]'
+    create: true
+    mode: "0644"
+  loop:
+    - networkingMode=nat
+    - dnsTunneling=false
+
+- name: Remove superseded mirrored-only WSL settings
+  ansible.builtin.lineinfile:
+    path: "{{ winprofile.stdout | trim }}/.wslconfig"
+    regexp: "^{{ item }}\\s*="
+    state: absent
+  loop:
+    - hostAddressLoopback
+    - ignoredPorts
 
 - name: Ensure C:\Temp exists
   ansible.builtin.file:
@@ -14,10 +43,13 @@
 # standalone .ps1 files to stage or keep in sync. The package is staged with the rest
 # of the Windows tree below; arming it is:
 #     C:\SafeHouse\python\python.exe -m safehouse_setup persist
-- name: Stage the Python host-configuration package
+- name: Stage the current Python packages
   ansible.builtin.copy:
-    src: "{{ repo_dir }}/python/safehouse_setup"
+    src: "{{ repo_dir }}/python/{{ item }}"
     dest: /mnt/c/SafeHouse/windows/youtube-budget/
+  loop:
+    - safehouse_setup
+    - safehouse_ytbudget
 
 - name: Ensure C:\SafeHouse working dirs exist
   ansible.builtin.file:
@@ -40,22 +72,22 @@
     - { src: "{{ repo_dir }}/blocklists/ad-ip-ranges.txt",   dest: /mnt/c/SafeHouse/blocklists/ad-ip-ranges.txt }
     - { src: "{{ repo_dir }}/blocklists/ad-watchlist.txt",   dest: /mnt/c/SafeHouse/blocklists/ad-watchlist.txt }
 
-# YouTube daily watch-time budget (Windows-native). The relative
-# ..\parental-blocks\youtube.txt path stays resolvable under the staged layout.
-- name: Deploy the YouTube watch-time budget toolkit to C:\SafeHouse
+# Current Python entry points. The relative ..\parental-blocks\youtube.txt path stays
+# resolvable under the staged layout.
+- name: Deploy the Python entry points to C:\SafeHouse
   ansible.builtin.copy:
-    src: "{{ item }}"
+    src: "{{ repo_dir }}/python/{{ item }}"
     dest: "/mnt/c/SafeHouse/windows/youtube-budget/{{ item | basename }}"
-  with_fileglob:
-    - "{{ repo_dir }}/windows/youtube-budget/*.ps1"
-    - "{{ repo_dir }}/windows/youtube-budget/config.json"
+  loop:
+    - install.py
+    - adguard_daily_reset.py
 
 - name: Remaining ADMIN steps (cannot self-elevate from WSL)
   ansible.builtin.debug:
     msg:
       - "Pi-hole is up. One-time ADMIN steps remain (elevated PowerShell):"
-      - "1) Point DNS:      Set-DnsClientServerAddress -InterfaceAlias 'Ethernet' -ServerAddresses <WSL-eth0-IP>"
+      - "1) Point DNS:      C:\\SafeHouse\\python\\python.exe -m safehouse_setup dns"
       - "2) Arm logon task: C:\\SafeHouse\\python\\python.exe -m safehouse_setup persist"
       - "3) Arm firewall:   powershell -ExecutionPolicy Bypass -File C:\\SafeHouse\\windows\\safehouse-adblock.ps1  (with ads showing)"
-      - "4) (Optional) Arm YouTube budget: powershell -ExecutionPolicy Bypass -File C:\\SafeHouse\\windows\\youtube-budget\\install-task.ps1  (ARMS enforcement)"
+      - "4) (Optional) Arm YouTube budget: cd C:\\SafeHouse\\windows\\youtube-budget; C:\\SafeHouse\\python\\python.exe install.py"
       - "Then RESTART Google Play Games so the crosvm VM picks up Pi-hole. See windows/README.md."

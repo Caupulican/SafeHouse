@@ -38,3 +38,6 @@ requirements-dev.txt
 # Captured Windows output used as test fixtures is committed deliberately; the
 # vendored embeddable runtime is not - install.py fetches it.
 python/runtime/
+# Machine-local Ansible state and generated WSL configuration.
+ansible/.wslconfig
+ansible/group_vars/local.yml

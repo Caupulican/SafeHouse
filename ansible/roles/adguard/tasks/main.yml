@@ -1,6 +1,6 @@
 ---
 # Runs only when safehouse_enable_adguard is true (gated in playbook.yml).
-# Assumes the pihole role has already moved Pi-hole to :5353 and set `wsl_ip`.
+# Assumes the pihole role has moved Pi-hole to host port 5353.
 
 - name: Ensure the adguard dir exists
   ansible.builtin.file:
@@ -13,6 +13,17 @@
     src: "{{ repo_dir }}/adguard/docker-compose.yml"
     dest: "{{ adguard_dir }}/docker-compose.yml"
     mode: "0644"
+
+- name: Deploy the idempotent AdGuard configuration owner
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ adguard_dir }}/{{ item | basename }}"
+    mode: "0750"
+  loop:
+    - "{{ repo_dir }}/adguard/bootstrap.py"
+    - "{{ repo_dir }}/adguard/apply-filters.py"
+    - "{{ repo_dir }}/adguard/adguard_api.py"
+    - "{{ repo_dir }}/adguard/filters.json"
 
 - name: Render .env
   ansible.builtin.template:
@@ -65,9 +76,9 @@
 - name: Configure AdGuard Home (wizard, upstream, filters)
   ansible.builtin.command:
     cmd: >-
-      python3 {{ repo_dir }}/adguard/bootstrap.py
+      python3 {{ adguard_dir }}/bootstrap.py
       --base-url http://127.0.0.1:{{ adguard_web_port }}
-      --upstream {{ wsl_ip }}:{{ adguard_upstream_port }}
+      --upstream 127.0.0.1:{{ adguard_upstream_port }}
       --password-file {{ adguard_dir }}/.admin-password
   register: _bootstrap
   changed_when: "'already configured' not in _bootstrap.stdout"
@@ -82,5 +93,5 @@
     msg:
       - "AdGuard Home : http://localhost:{{ adguard_web_port }}  (user: admin)"
       - "Password     : {{ adguard_dir }}/.admin-password"
-      - "Upstream     : {{ wsl_ip }}:{{ adguard_upstream_port }} (Pi-hole)"
-      - "Verify       : dig @{{ wsl_ip }} doubleclick.net +short   -> 0.0.0.0"
+      - "Upstream     : 127.0.0.1:{{ adguard_upstream_port }} (Pi-hole)"
+      - "Verify       : dig @127.0.0.1 doubleclick.net +short   -> 0.0.0.0"

@@ -158,14 +158,14 @@ C:\SafeHouse\python\python.exe -m safehouse_ytbudget.cli status
 
 ## The YouTube watch-time budget
 
-A cumulative daily allowance — "3 hours a day, spend it whenever" — rather than a
+A cumulative daily allowance - "1 hour a day, spend it whenever" - rather than a
 time-of-day window. Nothing off the shelf does this: not AdGuard Home schedules, not
 Microsoft Family Safety. Both do time-of-day windows or total device screen time.
 
-**Default: 180 minutes/day.** Set it in `windows/youtube-budget/.env`:
+**Default: 60 minutes/day.** Set it in `windows/youtube-budget/.env`:
 
 ```ini
-YB_LIMIT_MIN=180
+YB_LIMIT_MIN=60
 ```
 
 then re-run `install.py`. Full key documentation in `.env.example`.
@@ -212,31 +212,23 @@ Enforcement **reconciles every tick**, so if something removes the block it goes
 That matters: the original bug in this tool was latching on the transition, so once
 "blocked" was recorded, nothing ever re-checked it.
 
-### Blocking happens on two lanes, and you need both
+### AdGuard is the screen-time enforcement owner
 
-| Lane | Covers | Blind to |
-|---|---|---|
-| **Hosts file** | programs using the Windows resolver — Edge, Chrome, Opera GX | anything with its own resolver; wildcard CDN names |
-| **AdGuard Home** | every client of the DNS chain, including the **Google Play Games VM**, phones, tablets | clients that do not use the chain |
-
-A hosts file has no wildcards, so it cannot express `*.googlevideo.com` — the per-session
-hostnames that carry the actual video. And it is invisible to the Google Play Games VM,
-which runs its own resolver inside `crosvm` and never reads it. The resolver lane covers
-both, and needs no IP tracking to do it.
+The budget toggles AdGuard Home's `youtube` blocked service. This one path covers Windows,
+the **Google Play Games VM**, and wildcard CDN names such as `*.googlevideo.com`. Endpoint
+firewall pins remain defense-in-depth for already-open connections. The former hosts-file
+lane was retired because Windows can deny atomic replacement of the live file, leaving a
+block that cannot be reliably reversed.
 
 `status` prints a **`Resolver`** line for exactly this reason:
 
 ```
-Hosts file : YouTube section blocked
 Resolver   : AdGuard Home blocking YouTube (covers the Play Games VM)
 ```
 
-If it says `NOT ARMED`, the budget is enforced for Windows applications only and YouTube
-inside Play Games keeps working regardless of how much time has been spent. This is not a
-hypothetical: it shipped that way. The lane existed in code and no caller ever built it,
-so for a day the child watched YouTube in Play Games while every log line and every
-status read `BLOCKED`. The watcher now reconciles the two lanes independently — if either
-drifts open while the other still blocks, the next tick repairs it and logs `[reblock]`.
+If it says `NOT ARMED`, screen-time blocking is unavailable and must be repaired. The
+watcher reconciles AdGuard every tick, so an out-of-band unblock is repaired and logged
+as `[reblock]`.
 
 ---
 

@@ -14,7 +14,7 @@ $py = 'C:\SafeHouse\python\python.exe'
 Edit `.env`, then re-run the installer:
 
 ```ini
-YB_LIMIT_MIN=180      # 3 hours (default)
+YB_LIMIT_MIN=60       # 1 hour (default)
 ```
 
 ```powershell
@@ -42,21 +42,17 @@ is documented in `.env.example`.
 ## Read the `Resolver` line in `status` first
 
 ```
-Hosts file : YouTube section blocked
 Resolver   : AdGuard Home blocking YouTube (covers the Play Games VM)
 ```
 
-There are **two** enforcement lanes and they cover different machines:
+AdGuard Home is the authoritative screen-time enforcement lane:
 
 | Lane | Covers | Blind to |
 |---|---|---|
-| Hosts file | Programs using the Windows resolver — Edge, Chrome, Opera | Anything with its own resolver |
-| AdGuard Home | Every client of the DNS chain, including the Google Play Games VM, phones, tablets | Clients that do not use it (see [ADGUARD.md](../../docs/ADGUARD.md)) |
+| AdGuard Home | Every client of the DNS chain, including Windows and the Google Play Games VM | Clients that do not use it (see [ADGUARD.md](../../docs/ADGUARD.md)) |
 
-If `status` says **`Resolver : NOT ARMED`**, the budget is enforced *only* for Windows
-applications. The Google Play Games VM runs its own resolver inside `crosvm` and never
-reads the hosts file, so YouTube inside Play Games keeps working no matter how much time
-has been used. Fix by running `adguard/bootstrap.py` in WSL and re-running `install.py`.
+If `status` says **`Resolver : NOT ARMED`**, screen-time blocking is unavailable. Fix by
+running `adguard/bootstrap.py` in WSL and re-running `install.py`.
 
 This is not hypothetical: it shipped that way, and the VM streamed unmetered for a full
 day while every log line and every `status` read `BLOCKED`.
@@ -88,7 +84,7 @@ The two `[start]` lines are worth reading after any reinstall — the second one
 whether the resolver lane is armed:
 
 ```
-[start] python watcher ENFORCING sample=20s window=240s limit=180m ...
+[start] python watcher ENFORCING sample=20s window=240s limit=60m ...
 [start] resolver lane ARMED at http://127.0.0.1:3000 (service=youtube, currently blocking)
 ```
 

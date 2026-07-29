@@ -1,17 +1,13 @@
 """Point the Windows resolver at the WSL DNS stack, and keep it there.
 
-Replaces windows/set-dns.ps1. Two settings, because one is not enough:
+Both address families are owned here, because one is not enough:
 
-  * **Adapter DNS** — the obvious one, set with `netsh`.
-  * **An NRPT rule** — the Name Resolution Policy Table. Without it the adapter setting
-    is quietly ignored whenever the router advertises an IPv6 resolver, which most do.
-    The machine then resolves around the filter and everything downstream looks broken
-    for no visible reason.
+  * **IPv4 adapter DNS** points at the Windows relay on 127.0.0.1.
+  * **IPv6 adapter DNS** points at the same relay on ::1, preventing router-advertised
+    IPv6 resolvers from bypassing the filter.
 
-NRPT is driven through `Add-DnsClientNrptRule`, invoked from Python. That cmdlet is the
-supported API; hand-writing its registry keys is undocumented guesswork on the one
-subsystem that must never be left broken. Python owns the logic, the verification and the
-rollback — PowerShell is just the tool it calls.
+Old NRPT rules are removed during every apply. They are not part of the active design:
+on this Windows build they wedge the DNS Client API even when the target answers directly.
 
 **Safety property:** DNS is the one thing on this machine that must not be left broken.
 Every path here verifies resolution afterwards and rolls the NRPT rule back if the
@@ -26,7 +22,14 @@ import re
 import socket
 import time
 
-from .winutil import NETSH, REG, flush_dns, powershell, run, wsl_ip
+from .winutil import (
+    NETSH,
+    REG,
+    flush_dns,
+    powershell,
+    reconcile_wsl_dns_stack,
+    run,
+)
 
 # The rule carries this comment, which is how it is found again and removed.
 NRPT_COMMENT = "SafeHouse: force the Windows DNS Client through the filtering resolver"
@@ -90,16 +93,57 @@ def interface_name(index: int) -> str | None:
     return name[0].strip() if name and name[0].strip() else None
 
 
+def adapter_dns_servers(iface: str, family: str) -> list[str] | None:
+    """Read one adapter's DNS servers without locale-sensitive text parsing."""
+    if family not in ("IPv4", "IPv6"):
+        raise ValueError(f"unsupported address family: {family}")
+    quoted_iface = "'" + iface.replace("'", "''") + "'"
+    rc, out = powershell(
+        f"$servers=@((Get-DnsClientServerAddress -InterfaceAlias {quoted_iface} "
+        f"-AddressFamily {family} -ErrorAction Stop).ServerAddresses); "
+        "ConvertTo-Json -InputObject $servers -Compress"
+    )
+    if rc != 0 or not out.strip():
+        return None
+    try:
+        parsed = json.loads(out.strip())
+    except ValueError:
+        return None
+    if parsed is None:
+        return []
+    if isinstance(parsed, str):
+        return [parsed]
+    return [value for value in parsed if isinstance(value, str)] if isinstance(parsed, list) else None
+
+
 def set_adapter_dns(iface: str, server: str) -> bool:
+    if adapter_dns_servers(iface, "IPv4") == [server]:
+        return True
     ok, _ = run([NETSH, "interface", "ipv4", "set", "dnsservers",
-                 f"name={iface}", "static", server, "primary", "validate=no"])
+                 f"name={iface}", "static", server, "primary", "validate=no"],
+                timeout=30)
+    return ok == 0
+
+
+def set_adapter_dns_v6(iface: str, server: str) -> bool:
+    if adapter_dns_servers(iface, "IPv6") == [server]:
+        return True
+    ok, _ = run([NETSH, "interface", "ipv6", "set", "dnsservers",
+                 f"name={iface}", "static", server, "primary", "validate=no"],
+                timeout=30)
+    return ok == 0
+
+
+def reset_adapter_dns_v6(iface: str) -> bool:
+    ok, _ = run([NETSH, "interface", "ipv6", "set", "dnsservers",
+                 f"name={iface}", "source=dhcp"], timeout=30)
     return ok == 0
 
 
 def _remove_rule_script() -> str:
     return (
         "Get-DnsClientNrptRule -ErrorAction SilentlyContinue | "
-        f"Where-Object {{ $_.Comment -eq '{NRPT_COMMENT}' }} | "
+        "Where-Object { $_.Comment -like 'SafeHouse:*' } | "
         "Remove-DnsClientNrptRule -Force -ErrorAction SilentlyContinue"
     )
 
@@ -157,12 +201,12 @@ def resolves(name: str = "example.com", server: str | None = None,
     if server is not None:
         # Probe the server itself with a minimal DNS query over UDP.
         return _probe_server(server, name, timeout)
-    try:
-        socket.setdefaulttimeout(timeout)
-        socket.getaddrinfo(name, None)
-        return True
-    except (OSError, socket.gaierror):
-        return False
+    rc, _ = powershell(
+        f"Resolve-DnsName -Name '{name}' -Type A -DnsOnly -QuickTimeout "
+        "-ErrorAction Stop | Out-Null",
+        timeout=max(1, int(timeout) + 2),
+    )
+    return rc == 0
 
 
 def _probe_server(server: str, name: str, timeout: float) -> bool:
@@ -179,7 +223,8 @@ def _probe_server(server: str, name: str, timeout: float) -> bool:
         return False
 
 
-def apply(prefer: str | None = None, wait_for_wsl: int = 8) -> dict:
+def apply(prefer: str | None = None, wait_for_wsl: int = 8,
+          verify_system: bool = True) -> dict:
     """Point Windows at the filtering resolver, falling back to the router.
 
     Returns a summary dict. Never leaves the machine unable to resolve: if the chosen
@@ -190,35 +235,46 @@ def apply(prefer: str | None = None, wait_for_wsl: int = 8) -> dict:
         raise SystemExit("No active IPv4 default route - cannot configure DNS.")
     iface = interface_name(iface_index) or str(iface_index)
 
+    # A native Windows relay makes localhost the stable policy endpoint. The relay owns
+    # WSL NAT address churn and fails open to the router if the guest is unavailable.
+    _ = wait_for_wsl  # Kept for API compatibility with older callers.
     target, mode = gateway, "router-failsafe"
-    ip = prefer
-    if ip is None:
-        for _ in range(wait_for_wsl):
-            ip = wsl_ip()
-            if ip:
-                break
-            time.sleep(3)
+    stack_reconciled = reconcile_wsl_dns_stack()
+    resolver = prefer or "127.0.0.1"
+    if stack_reconciled and _probe_server(resolver, "example.com", 3.0):
+        target, mode = resolver, "filtering-resolver"
 
-    if ip and _probe_server(ip, "example.com", 3.0):
-        target, mode = ip, "filtering-resolver"
-
-    set_adapter_dns(iface, target)
-    set_nrpt(target)
+    # Retire NRPT before validating the replacement. Leaving a stale rule installed is
+    # enough to hang Resolve-DnsName even when both configured servers answer directly.
+    set_nrpt(None)
+    adapter_ok = set_adapter_dns(iface, target)
+    adapter_v6_ok = set_adapter_dns_v6(iface, "::1") if adapter_ok else False
+    if not adapter_ok or not adapter_v6_ok:
+        if gateway:
+            set_adapter_dns(iface, gateway)
+        reset_adapter_dns_v6(iface)
+        flush_dns()
+        return {"mode": "rolled-back", "interface": iface, "resolver": resolver,
+                "dns": gateway, "ok": False,
+                "stack_reconciled": stack_reconciled}
     disable_browser_doh()
     flush_dns()
 
     # Verify, and undo the NRPT rule rather than leave a machine that cannot resolve.
-    if not resolves():
+    if verify_system and not resolves():
         time.sleep(2)
         if not resolves():
             set_nrpt(None)
             if gateway:
                 set_adapter_dns(iface, gateway)
+            reset_adapter_dns_v6(iface)
             flush_dns()
-            return {"mode": "rolled-back", "interface": iface, "wsl_ip": ip,
-                    "dns": gateway, "ok": False}
+            return {"mode": "rolled-back", "interface": iface, "resolver": resolver,
+                    "dns": gateway, "ok": False,
+                    "stack_reconciled": stack_reconciled}
 
-    return {"mode": mode, "interface": iface, "wsl_ip": ip, "dns": target, "ok": True}
+    return {"mode": mode, "interface": iface, "resolver": resolver, "dns": target,
+            "ok": True, "stack_reconciled": stack_reconciled}
 
 
 def clear() -> None:

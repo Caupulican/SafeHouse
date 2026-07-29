@@ -38,7 +38,7 @@
      10. Verifies the result and prints what to do next.
 
 .PARAMETER LimitMinutes
-    Daily YouTube budget in minutes. Default 180 (3 hours).
+    Daily YouTube budget in minutes. Default 60 (1 hour).
 
 .PARAMETER SkipWsl
     Skip the WSL/Docker half. For repairing only the Windows side.
@@ -51,7 +51,7 @@
 #>
 [CmdletBinding()]
 param(
-    [int]$LimitMinutes = 180,
+    [int]$LimitMinutes = 60,
     [switch]$SkipWsl,
     [switch]$SkipFirewall,
     [switch]$WhatIf
@@ -214,8 +214,12 @@ if ($script:DeferredDns -and -not $WhatIf) {
     Write-Step 'Configuring Windows DNS (Python)...'
     if (Test-Path $pyExe) {
         $out = & $pyExe -c "from safehouse_setup import dns; import json; print(json.dumps(dns.apply()))" 2>&1
-        if ($LASTEXITCODE -eq 0) { Write-Ok "DNS configured: $out" }
-        else { Write-Fail "DNS configuration failed: $out" }
+        if ($LASTEXITCODE -eq 0) {
+            Write-Ok "DNS configured: $out"
+            $persist = & $pyExe -m safehouse_setup persist 2>&1
+            if ($LASTEXITCODE -eq 0) { Write-Ok "DNS persistence armed: $persist" }
+            else { Write-Fail "DNS persistence failed: $persist" }
+        } else { Write-Fail "DNS configuration failed: $out" }
     } else { Write-Fail 'Python runtime missing; cannot configure DNS' }
 }
 
@@ -318,7 +322,7 @@ if (-not $WhatIf) {
     if ($ok -and $ok -ne '0.0.0.0') { Write-Ok "normal resolution works (github.com -> $ok)" }
     else { Write-Fail 'github.com does not resolve - DNS is broken, investigate before leaving this machine' }
 
-    $task = Get-ScheduledTask -TaskName 'SafeHouse-YouTubeBudget' -ErrorAction SilentlyContinue
+    $task = Get-ScheduledTask -TaskName 'SafeHouse-YouTubeBudget-Py' -ErrorAction SilentlyContinue
     if ($task) { Write-Ok "watcher task: $($task.State)" } else { Write-Fail 'watcher task not registered' }
 }
 
@@ -336,9 +340,9 @@ Write-Host '=============================================================' -Fore
 Write-Host @"
 
   Daily YouTube budget : $LimitMinutes minutes
-  Status               : C:\SafeHouse\windows\youtube-budget\youtube-budget-ctl.ps1 status
-  Grant more time      : ...\youtube-budget-ctl.ps1 grant 30
-  Block now            : ...\youtube-budget-ctl.ps1 block
+  Status               : python.exe -m safehouse_ytbudget.cli status
+  Grant more time      : python.exe -m safehouse_ytbudget.cli grant 30
+  Block now            : python.exe -m safehouse_ytbudget.cli block
   Pi-hole dashboard    : http://localhost:8053/admin
   AdGuard dashboard    : http://localhost:3000
 

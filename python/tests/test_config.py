@@ -74,6 +74,10 @@ def test_warnings_carry_line_numbers():
 # --- config.json -------------------------------------------------------------
 
 
+def test_default_daily_limit_is_one_hour():
+    assert Config().limit_min == 60
+
+
 def test_from_json_reads_known_fields():
     values, warnings = from_json('{"limit_min": 90, "sample_sec": 15}')
     assert values == {"limit_min": 90, "sample_sec": 15}

@@ -213,6 +213,8 @@ def retire_task(name: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from safehouse_setup.migration import retire_legacy_runtime
+
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--shadow", action="store_true",
                    help="register the observe-only task that runs beside the PowerShell "
@@ -236,6 +238,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Vendored runtime not found at {args.python}.")
         print("Fetch the embeddable distribution first - see windows/youtube-budget/README.md")
         return 1
+
+    retire_legacy_runtime()
 
     pkg_dir = Path(__file__).resolve().parent
 

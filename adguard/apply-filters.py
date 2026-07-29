@@ -24,30 +24,13 @@ import base64
 import json
 import sys
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
+
+from adguard_api import api
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_SPEC = HERE / "filters.json"
 DEFAULT_CREDS = Path.home() / "adguard" / ".admin-password"
-
-
-def api(base: str, auth: str, path: str, payload=None, method=None, timeout=120):
-    data = json.dumps(payload).encode() if payload is not None else None
-    req = urllib.request.Request(
-        base + path, data=data, method=method or ("POST" if data is not None else "GET")
-    )
-    req.add_header("Authorization", "Basic " + auth)
-    if data is not None:
-        req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read().decode()
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read().decode()
-    except (urllib.error.URLError, OSError) as exc:
-        return None, str(exc)
 
 
 def main(argv: list[str] | None = None) -> int:

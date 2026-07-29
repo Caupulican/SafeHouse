@@ -96,7 +96,7 @@ A Scheduled Task (`SafeHouse-YouTubeBudget-Py`, trigger **AtStartup**, runs as S
    and `[pin]` lines record each new pinned IP (flagged `goog` or `GGC/off-goog`) so the
    mechanism can be audited from the world-readable log.
 
-4. **Enforce.** Effective limit = `limit_min*60 + bonus_sec` (default limit **180 min**).
+4. **Enforce.** Effective limit = `limit_min*60 + bonus_sec` (default limit **60 min**).
    Enforcement is **reconciled on every tick**, not latched on the transition: while
    `seconds_used >= limit`, each tick re-checks that the block is actually present and
    re-applies it if something removed it (logged as `[reblock]`). Conversely, once under
@@ -160,7 +160,7 @@ to guide it.
   written atomically each tick.
 - **Config:** `C:\ProgramData\SafeHouse\config.json` =
   `{ limit_min, sample_sec, window_sec, min_throughput_kbps, pin_idle_expire_min }`
-  (defaults 180 / 20 / 240 / 64 / 30). `limit_min` and `bonus_sec` take effect live each tick;
+  (defaults 60 / 20 / 240 / 64 / 30). `limit_min` and `bonus_sec` take effect live each tick;
   changing `sample_sec`, `window_sec`, `min_throughput_kbps`, or `pin_idle_expire_min` needs
   the task restarted (`Stop-ScheduledTask` / `Start-ScheduledTask -TaskName
   SafeHouse-YouTubeBudget-Py`, or a reboot).

@@ -12,6 +12,7 @@ Nothing here imports anything outside the standard library.
 from __future__ import annotations
 
 import ctypes
+import ipaddress
 import os
 import subprocess
 from pathlib import Path
@@ -119,20 +120,30 @@ def reg_query(key: str, name: str) -> str | None:
 
 
 def wsl_ip(distro: str | None = None) -> str | None:
-    """The WSL eth0 address, which is where the resolver listens.
-
-    It changes across reboots, which is why nothing in this repo hardcodes it.
-    """
+    """Resolve the current WSL NAT address for the Windows transport adapter."""
     args = [WSL]
     if distro:
         args += ["-d", distro]
-    args += ["bash", "-lc", "hostname -I | cut -d' ' -f1"]
+    args += ["bash", "-lc", "hostname -I"]
     rc, out = run(args, timeout=60)
     if rc != 0:
         return None
-    ip = out.strip().split()[0] if out.strip() else ""
-    return ip or None
+    for token in out.split():
+        try:
+            address = ipaddress.ip_address(token)
+        except ValueError:
+            continue
+        if address.version == 4 and address.is_private:
+            return str(address)
+    return None
+
+
+def reconcile_wsl_dns_stack() -> bool:
+    """Rebind the current DNS stack before Windows starts trusting its address."""
+    command = "$HOME/.local/bin/safehouse-reconcile-dns"
+    rc, _ = run([WSL, "bash", "-lc", command], timeout=240)
+    return rc == 0
 
 
 def flush_dns() -> None:
-    run([IPCONFIG, "/flushdns"])
+    run([IPCONFIG, "/flushdns"], timeout=15)

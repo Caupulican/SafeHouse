@@ -26,7 +26,7 @@ class Config:
 
     # Daily cumulative budget in minutes. 0 is legitimate and means "never allowed"
     # (`ctl set-limit 0` relies on it), which is why this one permits zero.
-    limit_min: int = 180
+    limit_min: int = 60
     # Seconds between samples; also the granularity budget is credited in.
     sample_sec: int = 20
     # Rolling window the throughput average is taken over.

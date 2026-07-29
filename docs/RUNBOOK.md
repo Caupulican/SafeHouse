@@ -44,9 +44,9 @@ Append the URL to `blocklists/adlists.txt`, then `./scripts/load-blocklists.sh`.
 - **YouTube — on-demand, per-machine (hosts layer):** YouTube is **allowed by default**. To block it
   on the Windows machine on demand, run (elevated PowerShell, self-elevates):
   ```powershell
-  powershell -ExecutionPolicy Bypass -File C:\SafeHouse\python -m safehouse_setup toggle -Name youtube -Block   # apply
-  powershell -ExecutionPolicy Bypass -File C:\SafeHouse\python -m safehouse_setup toggle -Name youtube -Allow   # remove
-  powershell -ExecutionPolicy Bypass -File C:\SafeHouse\python -m safehouse_setup toggle -Name youtube          # status
+  C:\SafeHouse\python\python.exe -m safehouse_setup toggle youtube --block   # apply
+  C:\SafeHouse\python\python.exe -m safehouse_setup toggle youtube --allow   # remove
+  C:\SafeHouse\python\python.exe -m safehouse_setup toggle youtube           # status
   ```
   It edits the live hosts file (idempotent, byte-preserving), flushes DNS, and reads its host list from
   `windows/parental-blocks/youtube.txt`. See [../windows/README.md](../windows/README.md) §5.
@@ -151,12 +151,13 @@ docker exec pihole pihole reloadlists
 ```
 
 ## Reboot behavior
-1. Log in → the `PiholeGPG-DNS` task wakes WSL, re-binds Pi-hole to the new WSL IP, and refreshes
+1. Log in -> the `SafeHouse-DNS` task runs the WSL stack reconciler, re-binds both DNS containers,
+   updates AdGuard's Pi-hole upstream, and refreshes
    the active adapter DNS plus the global Windows DNS Client NRPT rule.
 2. **Open Google Play Games *after* login** so the VM picks up Pi-hole.
 3. Check it ran and the default Windows resolver is filtered:
    ```powershell
-   Get-Content $env:USERPROFILE\.pihole\set-dns.log -Tail 3
+   Get-ScheduledTaskInfo -TaskName SafeHouse-DNS
    Get-DnsClientNrptRule | Where-Object Comment -like 'SafeHouse:*'
    Resolve-DnsName doubleclick.net -Type A   # -> 0.0.0.0
    Resolve-DnsName example.com -Type A       # -> real addresses
@@ -165,7 +166,7 @@ docker exec pihole pihole reloadlists
 ## Troubleshooting
 - **No internet after reboot:** the failsafe targets both adapter DNS and the NRPT rule at the
   auto-detected gateway; check the log, ensure WSL/docker started, then re-run the task:
-  `Start-ScheduledTask -TaskName PiholeGPG-DNS`.
+  `Start-ScheduledTask -TaskName SafeHouse-DNS`.
 - **Container won't start:** `cd ~/pihole && docker compose logs --tail=50`. Usually a stale
   `PIHOLE_BIND_IP` in `.env`: fix it to `hostname -I`'s first IP and `docker compose up -d`.
 - **Dashboard unreachable from Windows:** TCP localhost forwarding → http://localhost:8053/admin.

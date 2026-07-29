@@ -1,6 +1,6 @@
 """On-demand hosts-file blocks, by name.
 
-Replaces windows/parental-toggle.ps1.
+This module is the only owner of manual parental host-file toggles.
 
     python -m safehouse_setup toggle youtube --status
     python -m safehouse_setup toggle youtube --block

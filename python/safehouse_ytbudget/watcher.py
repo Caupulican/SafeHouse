@@ -23,26 +23,6 @@ from .platform.windows import WindowsPlatform
 from .tick import Paths, Ticker
 
 DEFAULT_ROOT = Path(os.environ.get("YB_ROOT", r"C:\ProgramData\SafeHouse"))
-DEFAULT_HOSTS = Path(
-    os.environ.get("YB_HOSTS", str(Path(os.environ.get("SystemRoot", r"C:\Windows"))
-                                  / "System32" / "drivers" / "etc" / "hosts"))
-)
-
-
-def find_block_list(script_dir: Path) -> Path:
-    """The host list is shared with the PowerShell toggle, and the repo layout and the
-    deployed C:\\SafeHouse layout put it in different places."""
-    for candidate in (
-        script_dir / "parental-blocks" / "youtube.txt",
-        script_dir.parent / "parental-blocks" / "youtube.txt",
-        script_dir.parent.parent / "windows" / "parental-blocks" / "youtube.txt",
-        Path(r"C:\SafeHouse\windows\parental-blocks\youtube.txt"),
-    ):
-        if candidate.exists():
-            return candidate
-    return script_dir / "parental-blocks" / "youtube.txt"
-
-
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="safehouse-ytbudget", description=__doc__)
     p.add_argument("--shadow", action="store_true",
@@ -50,8 +30,6 @@ def build_parser() -> argparse.ArgumentParser:
                         "PowerShell watcher during the port")
     p.add_argument("--once", action="store_true", help="run a single tick and exit")
     p.add_argument("--root", type=Path, default=DEFAULT_ROOT)
-    p.add_argument("--hosts", type=Path, default=DEFAULT_HOSTS)
-    p.add_argument("--block-list", type=Path, default=None)
     return p
 
 
@@ -60,17 +38,12 @@ def main(argv: list[str] | None = None) -> int:
 
     suffix = "-py" if args.shadow else ""
     log_path = args.root / f"youtube-budget-python{'-shadow' if args.shadow else ''}.log"
-    block_list = args.block_list or find_block_list(Path(__file__).resolve().parent.parent)
-
-    # Arm the resolver lane before the platform is built. Without it the hosts file is
-    # the only enforcement, and the hosts file is invisible to anything that does not use
-    # the Windows resolver -- which is exactly the Google Play Games VM.
+    # AdGuard is the single enforcement owner and covers both Windows and the Play Games
+    # VM. The retired hosts-file lane could not be atomically reversed on Windows.
     adguard, adguard_status = load_adguard(args.root)
 
     real = WindowsPlatform(
         root=args.root,
-        hosts_path=args.hosts,
-        block_list=block_list,
         log_path=log_path,
         adguard=adguard,
     )
@@ -93,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     mode = "SHADOW (observes only)" if args.shadow else "ENFORCING"
     platform.log(
         f"[start] python watcher {mode} sample={cfg.sample_sec}s window={cfg.window_sec}s "
-        f"limit={cfg.limit_min}m min_kbps={cfg.min_throughput_kbps} hosts={args.hosts}"
+        f"limit={cfg.limit_min}m min_kbps={cfg.min_throughput_kbps}"
     )
     # Loud on every start, at warn level when the lane is down. A disarmed resolver is a
     # hole in the coverage, not a configuration nicety, and must never be inferable only

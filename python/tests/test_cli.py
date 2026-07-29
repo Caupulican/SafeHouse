@@ -243,11 +243,11 @@ def test_status_reports_a_blocking_resolver(tmp_path):
     assert any("AdGuard Home blocking YouTube" in ln for ln in lines)
 
 
-def test_status_flags_a_resolver_that_is_letting_youtube_through(tmp_path):
+def test_status_reports_an_armed_resolver_that_is_currently_allowing(tmp_path):
     plat = FakePlatform(hosts_blocked=True, resolver=False)
     _, lines = run("status", None, plat, root=tmp_path)
-    assert any("ALLOWING YouTube" in ln for ln in lines)
-    assert any("coverage is incomplete" in ln for ln in lines)
+    assert any("ARMED and allowing YouTube" in ln for ln in lines)
+    assert not any("coverage is incomplete" in ln for ln in lines)
 
 
 def test_status_says_loudly_when_the_lane_was_never_armed(tmp_path):

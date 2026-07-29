@@ -5,6 +5,47 @@
     state: directory
     mode: "0750"
 
+- name: Ensure the SafeHouse command directory exists
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/.local/bin"
+    state: directory
+    mode: "0750"
+
+- name: Install the authoritative DNS stack reconciler
+  ansible.builtin.copy:
+    src: "{{ repo_dir }}/scripts/reconcile-dns.sh"
+    dest: "{{ ansible_env.HOME }}/.local/bin/safehouse-reconcile-dns"
+    mode: "0750"
+
+# WSL's default DNS tunnel calls back into the Windows DNS Client. Once Windows NRPT
+# points at WSL, that forms a Windows -> WSL -> Windows -> WSL recursion loop. The WSL
+# host is infrastructure, not a child client, so give it the same direct upstreams that
+# Pi-hole uses while Windows and LAN clients remain filtered through AdGuard.
+- name: Disable the recursive WSL DNS tunnel
+  ansible.builtin.blockinfile:
+    path: /etc/wsl.conf
+    marker: "# {mark} SAFEHOUSE DNS"
+    block: |
+      [network]
+      generateResolvConf = false
+  become: true
+
+- name: Remove the generated WSL resolver link
+  ansible.builtin.file:
+    path: /etc/resolv.conf
+    state: absent
+  become: true
+
+- name: Configure non-recursive DNS for the WSL infrastructure host
+  ansible.builtin.copy:
+    dest: /etc/resolv.conf
+    mode: "0644"
+    content: |
+      # SafeHouse infrastructure resolver. Child traffic remains filtered by AdGuard.
+      nameserver 1.1.1.1
+      nameserver 1.0.0.1
+  become: true
+
 # Generated once and reused on every later run, so re-running the playbook does not
 # change the admin password out from under the operator.
 - name: Resolve the admin password (generate and persist on first run)
@@ -27,20 +68,6 @@
     dest: "{{ pihole_dir }}/docker-compose.yml"
     mode: "0644"
 
-- name: Detect the WSL eth0 IP
-  ansible.builtin.command: hostname -I
-  register: _ip
-  changed_when: false
-
-- name: Set the detected IP
-  ansible.builtin.set_fact:
-    wsl_ip: "{{ _ip.stdout.split()[0] | default('') }}"
-
-- name: Fail early when no IP could be detected
-  ansible.builtin.fail:
-    msg: "Could not detect an eth0 IP from `hostname -I` -- Pi-hole would bind nowhere."
-  when: wsl_ip | length == 0
-
 - name: Render .env
   ansible.builtin.template:
     src: env.j2
@@ -57,7 +84,7 @@
     'Started' in _up.stderr or 'Created' in _up.stderr or 'Recreated' in _up.stderr
 
 - name: Wait until Pi-hole answers DNS
-  ansible.builtin.command: "docker exec {{ pihole_container }} dig +short github.com @127.0.0.1"
+  ansible.builtin.command: "docker exec {{ pihole_container }} dig +short -p {{ pihole_dns_port }} github.com @127.0.0.1"
   become: "{{ docker_become | default(false) }}"
   register: _dns
   until: _dns.rc == 0 and (_dns.stdout | length) > 0
@@ -70,12 +97,15 @@
   environment:
     PIHOLE_CONTAINER: "{{ pihole_container }}"
   register: _grav
+  until: _grav.rc == 0
+  retries: 12
+  delay: 5
   changed_when: true
 
 - name: Pi-hole summary
   ansible.builtin.debug:
     msg:
-      - "Pi-hole DNS   : {{ wsl_ip }}:{{ pihole_dns_port }}"
+      - "Pi-hole DNS   : localhost:{{ pihole_dns_port }}"
       - "Dashboard     : http://localhost:{{ pihole_web_port }}/admin"
       - "Admin password: {{ 'as set in pihole_password' if pihole_password | length > 0 else pihole_dir ~ '/.admin-password' }}"
       - "{{ _grav.stdout_lines[-1] | default('gravity done') }}"

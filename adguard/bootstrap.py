@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Configure a fresh AdGuard Home end to end, with no wizard.
 
-    python3 adguard/bootstrap.py --upstream <WSL_IP>:5353
+    python3 adguard/bootstrap.py --upstream 127.0.0.1:5353
 
 AdGuard Home's first run puts up an interactive setup wizard, which is the one thing
 standing between this stack and an unattended install. It also exposes that wizard as an
@@ -19,35 +19,16 @@ from __future__ import annotations
 
 import argparse
 import base64
-import json
 import secrets
 import string
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
+from adguard_api import api
+
 HERE = Path(__file__).resolve().parent
-
-
-def api(base, auth, path, payload=None, method=None, timeout=60):
-    data = json.dumps(payload).encode() if payload is not None else None
-    req = urllib.request.Request(
-        base + path, data=data, method=method or ("POST" if data is not None else "GET")
-    )
-    if auth:
-        req.add_header("Authorization", "Basic " + auth)
-    if data is not None:
-        req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read().decode()
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read().decode()
-    except (urllib.error.URLError, OSError) as exc:
-        return None, str(exc)
 
 
 def wait_for(base, attempts=60):

@@ -2,7 +2,7 @@
 pihole_dir: "{{ ansible_env.HOME }}/pihole"
 pihole_container: pihole
 pihole_web_port: 8053
-pihole_tz: "{{ safehouse_tz | default('America/Sao_Paulo') }}"
+pihole_tz: "{{ safehouse_tz | default('Etc/UTC') }}"
 pihole_upstreams: "{{ safehouse_upstreams_semicolon | default('1.1.1.1;1.0.0.1') }}"
 
 # 53 when Pi-hole is the only resolver; 5353 when AdGuard Home is chained in front and

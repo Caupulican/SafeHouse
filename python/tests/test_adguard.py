@@ -15,12 +15,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 from safehouse_ytbudget.platform.adguard import AdGuardClient, AdGuardConfig
+from safehouse_ytbudget.platform.windows import WindowsPlatform
 
 
 class _State:
     def __init__(self):
         self.ids: list[str] = []
-        self.schedule = {"time_zone": "America/Sao_Paulo"}
+        self.schedule = {"time_zone": "Etc/UTC"}
         self.requests: list[tuple[str, str, dict | None]] = []
         self.fail_with: int | None = None
         self.auth_seen: str | None = None
@@ -111,6 +112,27 @@ def test_unblock_removes_the_service(server):
     assert state.ids == []
 
 
+def test_screen_time_uses_adguard_without_mutating_the_hosts_file(server, tmp_path):
+    client, state = server
+    hosts = tmp_path / "hosts"
+    original = b"127.0.0.1 localhost\r\n"
+    hosts.write_bytes(original)
+    block_list = tmp_path / "youtube.txt"
+    block_list.write_text("youtube.com\n")
+    platform = WindowsPlatform(
+        root=tmp_path,
+        log_path=tmp_path / "watcher.log",
+        adguard=client,
+    )
+
+    assert "adguard=BLOCKED" in platform.block_hosts()
+    assert state.ids == ["youtube"]
+    assert hosts.read_bytes() == original
+    assert "adguard=UNBLOCKED" in platform.unblock_hosts()
+    assert state.ids == []
+    assert hosts.read_bytes() == original
+
+
 def test_blocking_twice_is_reported_as_already(server):
     client, state = server
     state.ids = ["youtube"]
@@ -147,7 +169,7 @@ def test_other_blocked_services_are_preserved(server):
 def test_schedule_is_preserved(server):
     """The schedule carries the timezone; dropping it would move any time-of-day rule."""
     client, state = server
-    state.schedule = {"time_zone": "America/Sao_Paulo", "mon": {"start": 0, "end": 100}}
+    state.schedule = {"time_zone": "Etc/UTC", "mon": {"start": 0, "end": 100}}
     before = dict(state.schedule)
     client.set_blocked(True)
     assert state.schedule == before

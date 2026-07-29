@@ -33,7 +33,7 @@ from . import atomicio
 START_MARKER = b"# === Parental block: YouTube (auto: daily budget) ==="
 END_MARKER = b"# === end YouTube block ==="
 
-# Any YouTube section, auto or applied by hand with parental-toggle.ps1.
+# Any YouTube section, automatic or applied by `safehouse_setup toggle`.
 _ANY_START = re.compile(rb"(?m)^# === Parental block: YouTube\b")
 
 # Scope 'auto': only the section this watcher owns. Scope 'any': a parent's manual block
@@ -43,7 +43,7 @@ _ANY_START = re.compile(rb"(?m)^# === Parental block: YouTube\b")
 # accumulating blank lines across repeated block/unblock cycles. The `(?<=\n)` lookbehind
 # is what makes that safe: it only consumes a newline that is itself preceded by one --
 # i.e. a genuinely blank line. Without it, a section written without a leading blank line
-# (a hand-made one, or parental-toggle.ps1's) would have the *previous line's* terminator
+# (a hand-made one, or the setup toggle's) would have the *previous line's* terminator
 # eaten, joining two hosts entries into one corrupt line.
 _LEAD_BLANK = rb"(?:(?<=\n)\r?\n)?"
 _TRAIL = rb"[^\r\n]*(?:\r?\n)?"

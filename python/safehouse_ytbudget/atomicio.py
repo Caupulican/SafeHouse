@@ -15,7 +15,11 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
+
+REPLACE_ATTEMPTS = 10
+REPLACE_RETRY_SEC = 0.05
 
 
 def write_bytes(path: Path, data: bytes) -> None:
@@ -32,7 +36,16 @@ def write_bytes(path: Path, data: bytes) -> None:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        for attempt in range(REPLACE_ATTEMPTS):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == REPLACE_ATTEMPTS - 1:
+                    raise
+                # Antivirus and the DNS Client briefly open the hosts file without
+                # delete sharing. Keep the update atomic, but tolerate that short lock.
+                time.sleep(REPLACE_RETRY_SEC)
     except BaseException:
         # A stale temp file would accumulate in a directory the child can read. Clean up
         # on any failure, including KeyboardInterrupt.

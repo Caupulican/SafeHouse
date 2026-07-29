@@ -75,15 +75,13 @@ Microsoft Family Safety (see below). That cumulative budget is exactly what
 ## How the budget uses AdGuard Home — the resolver lane
 
 **Implemented and live.** The watcher meters and owns the budget, and when the budget
-runs out it enforces on *two* lanes: the Windows hosts file, and AdGuard Home's `youtube`
-blocked-service over the REST API. `python -m safehouse_ytbudget.cli status` reports both.
+runs out it uses AdGuard Home's `youtube` blocked-service over the REST API as the single
+authoritative enforcement path. `python -m safehouse_ytbudget.cli status` reports it.
 
 The resolver lane is not a nicety. It is the only one that covers:
 
-- **`*.googlevideo.com`** — the per-session CDN hostnames carrying the video bytes. A
-  hosts file has no wildcards and structurally cannot block these.
-- **The Google Play Games VM.** `crosvm` runs its own resolver inside the guest and never
-  reads the Windows hosts file. Everything the hosts lane does is invisible to it.
+- **`*.googlevideo.com`** — the per-session CDN hostnames carrying the video bytes.
+- **The Google Play Games VM.** `crosvm` runs its own resolver inside the guest.
 - **Every other client of the chain** — phones, tablets, a second PC.
 
 Credentials live in `C:\ProgramData\SafeHouse\adguard.json` (SYSTEM + Administrators

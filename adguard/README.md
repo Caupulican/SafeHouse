@@ -37,10 +37,10 @@ By hand:
 
 ```bash
 mkdir -p ~/adguard && cp adguard/docker-compose.yml ~/adguard/
-cp adguard/.env.example ~/adguard/.env      # set ADGUARD_BIND_IP
+cp adguard/.env.example ~/adguard/.env
 cd ~/adguard && docker compose up -d
 
-python3 adguard/bootstrap.py --upstream <WSL_IP>:5353
+python3 adguard/bootstrap.py --upstream 127.0.0.1:5353
 ```
 
 `bootstrap.py` drives the first-run wizard through its API, which is the one thing that
@@ -69,14 +69,14 @@ unsure about re-running is a script that never gets re-run.
 Verify with the query log, which names the rule that matched, or:
 
 ```bash
-dig @<WSL_IP> a.applovin.com +short     # -> 0.0.0.0
-dig @<WSL_IP> play.googleapis.com +short # -> a real address (Play Games must still work)
+dig @127.0.0.1 a.applovin.com +short     # -> 0.0.0.0
+dig @127.0.0.1 play.googleapis.com +short # -> a real address (Play Games must still work)
 ```
 
 ## Verifying the chain
 
 ```bash
-dig @<WSL_IP> doubleclick.net +short    # -> 0.0.0.0, blocked somewhere in the chain
+dig @127.0.0.1 doubleclick.net +short    # -> 0.0.0.0, blocked somewhere in the chain
 docker exec pihole tail -20 /var/log/pihole/pihole.log   # the query should appear here
 ```
 

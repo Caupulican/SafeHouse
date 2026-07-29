@@ -2,7 +2,7 @@
 adguard_dir: "{{ ansible_env.HOME }}/adguard"
 adguard_container: adguardhome
 adguard_web_port: 3000
-adguard_tz: "{{ safehouse_tz | default('America/Sao_Paulo') }}"
+adguard_tz: "{{ safehouse_tz | default('Etc/UTC') }}"
 
 # Where AdGuard Home forwards what it does not block. Points at Pi-hole on its moved
 # port, which is the whole reason for the chain: AdGuard Home adds per-client policy

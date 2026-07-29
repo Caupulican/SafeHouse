@@ -5,21 +5,11 @@ services:
     hostname: adguardhome
     # AdGuard Home is the FRONT-END resolver: it owns :53 and forwards everything it
     # does not block itself to Pi-hole (see ADGUARD_UPSTREAM in .env / docs/ADGUARD.md).
-    # DNS is bound to the WSL2 eth0 IP for the same reason Pi-hole is - to dodge the
-    # 10.255.255.254:53 WSL DNS-tunnel listener. The IP changes across reboots, so it is
-    # injected via .env exactly like PIHOLE_BIND_IP.
-    #
-    # Because AdGuard Home takes over :53 on that same IP, the Windows adapter DNS and
-    # the NRPT rule keep pointing at the WSL IP and need NO change - the only thing that
-    # moves is Pi-hole, down to PIHOLE_DNS_PORT (5353).
-    ports:
-      - "${ADGUARD_BIND_IP}:53:53/tcp"
-      - "${ADGUARD_BIND_IP}:53:53/udp"
-      # Setup wizard AND the dashboard once configured. Published on all interfaces so
-      # you can reach it from Windows at http://localhost:<port>
-      - "${ADGUARD_WEB_PORT:-3000}:3000/tcp"
+    # Host networking avoids Docker port publishing and WSL address rebinding. AdGuard
+    # owns guest :53 and reaches Pi-hole on guest loopback :5353.
+    network_mode: host
     environment:
-      TZ: "${ADGUARD_TZ:-America/Sao_Paulo}"
+      TZ: "${ADGUARD_TZ:-Etc/UTC}"
     volumes:
       - "./work:/opt/adguardhome/work"
       - "./conf:/opt/adguardhome/conf"

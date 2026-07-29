@@ -10,7 +10,7 @@ safehouse_enable_adguard: false
 
 # Timezone for both containers. Also drives AdGuard Home's schedule windows -- get this
 # wrong and a "blocked after 20:00" rule fires at the wrong hour.
-safehouse_tz: America/Sao_Paulo
+safehouse_tz: Etc/UTC
 
 # Upstream resolvers for whatever the chain does not block.
 safehouse_upstreams_semicolon: "1.1.1.1;1.0.0.1"

@@ -30,7 +30,6 @@ from datetime import datetime
 from pathlib import Path
 from xml.etree import ElementTree
 
-from .. import hosts as hostsmod
 from ..pins import normalise_ip
 from .adguard import AdGuardClient, write_block_date
 
@@ -188,11 +187,9 @@ def parse_pktmon_counters(raw: str) -> int | None:
 
 
 class WindowsPlatform:
-    def __init__(self, *, root: Path, hosts_path: Path, block_list: Path, log_path: Path,
+    def __init__(self, *, root: Path, log_path: Path,
                  adguard: AdGuardClient | None = None) -> None:
         self.root = root
-        self.hosts_path = hosts_path
-        self.block_list = block_list
         self.log_path = log_path
         # Optional second enforcement layer. When present, block/unblock drives it as
         # well as the hosts file: the resolver can wildcard *.googlevideo.com, which a
@@ -226,18 +223,8 @@ class WindowsPlatform:
     # --- hosts ---------------------------------------------------------------
 
     def hosts_blocked(self) -> bool:
-        """The hosts-file layer only.
-
-        This used to return "either layer is blocking", which sounds safer and is not:
-        with the resolver lane down, the hosts file answered for both, the reconcile saw
-        "blocked" and never retried the resolver. Everything downstream of the Windows
-        resolver -- the Play Games VM above all -- kept streaming, and every log line
-        said BLOCKED. Each layer now reports only itself; `decide()` combines them.
-        """
-        try:
-            return hostsmod.is_blocked(hostsmod.read(self.hosts_path))
-        except OSError:
-            return False
+        """Compatibility name for the authoritative AdGuard enforcement state."""
+        return self.resolver_blocked() is True
 
     def resolver_blocked(self) -> bool | None:
         """The AdGuard Home layer: True/False, or None if disarmed or unreachable."""
@@ -246,61 +233,21 @@ class WindowsPlatform:
         return self.adguard.is_blocked()  # already None when unreachable
 
     def block_hosts(self) -> str:
-        """Block by every means available, reporting each.
-
-        Named for the hosts file for historical reasons, but the decision layer means
-        "make YouTube unreachable" -- so the resolver is driven here too. Each layer is
-        independent: one failing must not stop the other being applied.
-        """
-        hosts_result = self._block_hosts_file()
+        """Block YouTube at the resolver, the sole screen-time enforcement owner."""
         if self.adguard is None:
-            return hosts_result
+            return "adguard=NOT_ARMED"
         adguard_result = self.adguard.set_blocked(True)
         if adguard_result in ("BLOCKED", "ALREADY"):
             write_block_date(self.adguard_marker, self.today())
-        return f"{hosts_result}; adguard={adguard_result}"
-
-    def _block_hosts_file(self) -> str:
-        try:
-            raw = hostsmod.read(self.hosts_path)
-        except OSError:
-            return "NOHOSTS"
-        if hostsmod.is_blocked(raw):
-            return "ALREADY"
-        try:
-            entries = hostsmod.parse_block_list(self.block_list.read_bytes())
-        except OSError:
-            return "NOLIST"
-        if not entries:
-            return "NOLIST"
-        try:
-            hostsmod.write_atomic(self.hosts_path, hostsmod.insert_block(raw, entries))
-        except OSError:
-            return "ERROR"
-        return f"BLOCKED:{len(entries)}"
+        return f"adguard={adguard_result}"
 
     def unblock_hosts(self, scope: str = "auto") -> str:
-        hosts_result = self._unblock_hosts_file(scope)
         if self.adguard is None:
-            return hosts_result
+            return "adguard=NOT_ARMED"
         adguard_result = self.adguard.set_blocked(False)
         if adguard_result in ("UNBLOCKED", "NONE"):
             write_block_date(self.adguard_marker, None)
-        return f"{hosts_result}; adguard={adguard_result}"
-
-    def _unblock_hosts_file(self, scope: str = "auto") -> str:
-        try:
-            raw = hostsmod.read(self.hosts_path)
-        except OSError:
-            return "NONE"
-        new = hostsmod.remove_block(raw, scope)
-        if new == raw:
-            return "NONE"
-        try:
-            hostsmod.write_atomic(self.hosts_path, new)
-        except OSError:
-            return "ERROR"
-        return "UNBLOCKED"
+        return f"adguard={adguard_result}"
 
     # --- DNS -----------------------------------------------------------------
 

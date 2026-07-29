@@ -7,7 +7,7 @@
     python -m safehouse_ytbudget.cli allow
     python -m safehouse_ytbudget.cli reset
 
-Mirrors `youtube-budget-ctl.ps1`. `set-limit` writes config.json, which is the single
+`set-limit` writes config.json, which is the single
 source of truth the watcher re-reads each tick; everything else is today-only state.
 
 The command bodies take a platform and paths rather than reaching for Windows directly,
@@ -75,23 +75,19 @@ def run(command: str, value: int | None, platform: Platform, *, root: Path,
             f"  Remaining  : {format_hms(remaining)}",
             f"  Budget     : {'BLOCKED (budget)' if st.blocked_by_budget else 'ALLOWED'}",
             f"  Manual hold: {'yes' if st.manual_block else 'no'}",
-            f"  Hosts file : YouTube section "
-            f"{'blocked' if platform.hosts_blocked() else 'allowed'}",
             f"  Firewall   : {len(platform.firewall_ips())} pinned endpoint(s) blocked",
         ]
-        # Report the resolver lane explicitly, including when it is missing. The hosts
-        # file covers only programs that use the Windows resolver; a parent reading
-        # "blocked" with no mention of the resolver has no way to know the Play Games VM
-        # is still wide open. Silence here is what hid that for a full day.
+        # Report the authoritative resolver lane explicitly, including when it is
+        # missing. Silence here once hid an unprotected Play Games VM for a full day.
         resolver = platform.resolver_blocked()
         out.append(
             "  Resolver   : " + {
                 True: "AdGuard Home blocking YouTube (covers the Play Games VM)",
-                False: "AdGuard Home is ALLOWING YouTube",
+                False: "AdGuard Home ARMED and allowing YouTube",
             }.get(resolver, "NOT ARMED - only Windows apps are covered, the Play Games "
                             "VM can still reach YouTube")
         )
-        if resolver is not True:
+        if resolver is None:
             out.append("               ^ coverage is incomplete; see docs/ADGUARD.md")
         return 0, out
 
@@ -132,7 +128,7 @@ def run(command: str, value: int | None, platform: Platform, *, root: Path,
         # it just because today's usage happens to sit under the limit.
         st.manual_block = True
         statemod.save(paths.state, st)
-        out.append(f"YouTube BLOCKED now (hosts={res}; endpoint firewall={fw}).")
+        out.append(f"YouTube BLOCKED now ({res}; endpoint firewall={fw}).")
         return 0, out
 
     if command == "allow":
@@ -142,7 +138,7 @@ def run(command: str, value: int | None, platform: Platform, *, root: Path,
         st.manual_block = False
         st.blocked_by_budget = False
         statemod.save(paths.state, st)
-        out.append(f"YouTube allowed (hosts={res}).")
+        out.append(f"YouTube allowed ({res}).")
         # Be honest rather than letting the parent think this stuck: enforcement
         # reconciles every tick, so over budget it will re-block within one sample.
         if st.seconds_used >= st.effective_limit_sec(cfg.limit_sec):
@@ -163,7 +159,7 @@ def run(command: str, value: int | None, platform: Platform, *, root: Path,
         platform.clear_firewall()
         platform.flush_dns()
         statemod.save(paths.state, st)
-        out.append(f"Today's usage and bonus zeroed; block lifted (hosts={res}).")
+        out.append(f"Today's usage and bonus zeroed; block lifted ({res}).")
         return 0, out
 
     return 2, out + [f"unknown command {command!r}"]
@@ -183,7 +179,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from .watcher import DEFAULT_HOSTS, DEFAULT_ROOT, find_block_list
+    from .watcher import DEFAULT_ROOT
     from .platform.adguard import load_client as load_adguard
     from .platform.windows import WindowsPlatform
 
@@ -195,8 +191,6 @@ def main(argv: list[str] | None = None) -> int:
     adguard, adguard_status = load_adguard(root)
     platform = WindowsPlatform(
         root=root,
-        hosts_path=DEFAULT_HOSTS,
-        block_list=find_block_list(Path(__file__).resolve().parent.parent),
         log_path=root / "youtube-budget-python.log",
         adguard=adguard,
     )

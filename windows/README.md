@@ -1,15 +1,14 @@
 # Windows side (admin / UAC steps)
 
-WSL can't elevate itself, so these two one-time steps are done by **you** in an **elevated
-PowerShell** (Right-click Start → *Terminal (Admin)*). The scripts here are staged automatically
-by `bootstrap.sh` / the Ansible `windows_persistence` role:
-- `safehouse_setup dns` → copied to `%USERPROFILE%\.pihole\safehouse_setup dns`
-- `safehouse_setup persist`  → copied to `C:\Temp\safehouse_setup persist`
+WSL can't elevate itself, so host changes run from an **elevated PowerShell** (Right-click
+Start -> *Terminal (Admin)*). `Install-SafeHouse.ps1` stages one Python package and registers
+its current persistence task; there are no standalone DNS or task scripts.
 
 ## 1. Point Windows DNS at Pi-hole (now)
-Run the staged persistence script once from an elevated PowerShell:
+Run the current command once from an elevated PowerShell:
 ```powershell
-powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\.pihole\safehouse_setup dns
+cd C:\SafeHouse\windows\youtube-budget
+C:\SafeHouse\python\python.exe -m safehouse_setup dns
 ```
 It auto-detects the active adapter, gateway, and current WSL address. It points the adapter at
 Pi-hole and installs a global Windows DNS Client NRPT rule so router-advertised IPv6 DNS cannot
@@ -19,15 +18,15 @@ the adapter and NRPT rule at the detected gateway as an internet-preserving fail
 
 ## 2. Arm the reboot-proof logon task
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\Temp\safehouse_setup persist
+C:\SafeHouse\python\python.exe -m safehouse_setup persist
 ```
-This registers **`PiholeGPG-DNS`** (runs at logon, highest privileges). On each login it wakes WSL,
+This registers **`SafeHouse-DNS`** (runs at logon, highest privileges). On each login it wakes WSL,
 re-binds Pi-hole to the current WSL IP, and refreshes the adapter DNS plus NRPT enforcement.
 
 Verify / test:
 ```powershell
-Get-ScheduledTask -TaskName PiholeGPG-DNS
-Start-ScheduledTask -TaskName PiholeGPG-DNS                       # simulate a reboot
+Get-ScheduledTask -TaskName SafeHouse-DNS
+Start-ScheduledTask -TaskName SafeHouse-DNS                       # simulate a reboot
 Get-DnsClientNrptRule | Where-Object Comment -like 'SafeHouse:*' # should name the WSL IP
 Resolve-DnsName doubleclick.net -Type A                           # should return 0.0.0.0
 Resolve-DnsName example.com -Type A                               # should return real addresses
@@ -35,8 +34,8 @@ Get-Content $env:USERPROFILE\.pihole\set-dns.log -Tail 3
 ```
 Remove:
 ```powershell
-Unregister-ScheduledTask -TaskName PiholeGPG-DNS -Confirm:$false
-Get-DnsClientNrptRule | Where-Object Comment -eq 'SafeHouse: force Windows DNS Client through Pi-hole' |
+Unregister-ScheduledTask -TaskName SafeHouse-DNS -Confirm:$false
+Get-DnsClientNrptRule | Where-Object Comment -like 'SafeHouse:*' |
   Remove-DnsClientNrptRule -Force
 Get-NetIPConfiguration | Where-Object IPv4DefaultGateway | ForEach-Object {
   Set-DnsClientServerAddress -InterfaceIndex $_.InterfaceIndex -ResetServerAddresses
@@ -64,9 +63,9 @@ on demand. It is staged to `C:\SafeHouse\python -m safehouse_setup toggle` with 
 `C:\SafeHouse\windows\parental-blocks\youtube.txt`. **YouTube is allowed by default** — the block is
 only applied when you run it with `-Block`.
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\SafeHouse\python -m safehouse_setup toggle -Name youtube -Block   # apply
-powershell -ExecutionPolicy Bypass -File C:\SafeHouse\python -m safehouse_setup toggle -Name youtube -Allow   # remove
-powershell -ExecutionPolicy Bypass -File C:\SafeHouse\python -m safehouse_setup toggle -Name youtube          # status
+C:\SafeHouse\python\python.exe -m safehouse_setup toggle youtube --block   # apply
+C:\SafeHouse\python\python.exe -m safehouse_setup toggle youtube --allow   # remove
+C:\SafeHouse\python\python.exe -m safehouse_setup toggle youtube           # status
 ```
 - **Self-elevates** via UAC for `-Block`/`-Allow` (status needs no elevation).
 - `-Block` appends a `# === Parental block: YouTube (toggled via safehouse_setup toggle) ===` … `# === end
