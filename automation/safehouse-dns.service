@@ -1,0 +1,29 @@
+# SafeHouse DNS stack recovery (oneshot, triggered by the .timer).
+# Paths/user are rendered absolute by ../scripts/install-dns-service.sh on install.
+#
+# Why this exists rather than trusting `restart: unless-stopped` in the compose files:
+# that policy was set on both containers and it still did not bring the stack back. On
+# 2026-08-01 a dockerd restart SIGKILLed AdGuard Home (exit 137) and it stayed down with
+# RestartCount=0 while Pi-hole recovered. Docker's restart policy is necessary but not
+# sufficient, and the failure is silent -- the Windows relay fails open to the router, so
+# name resolution keeps working with no filtering at all behind it. That state went
+# unnoticed for fourteen hours, and the in-game ads in the Play Games VM came back.
+#
+# reconcile-dns.sh is idempotent and health-checks the chain, so running it on a timer is
+# both the boot path and the watchdog: whatever killed the stack, the next tick rebuilds it.
+[Unit]
+Description=SafeHouse DNS stack recovery (bring up Pi-hole + AdGuard Home, verify filtering)
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=5min
+User=__USER__
+# Set explicitly rather than inherited: the reconciler resolves the compose projects and
+# the AdGuard credentials out of the home directory, and a systemd service is not
+# guaranteed the $HOME of an interactive shell.
+Environment=HOME=__HOME__
+Environment=PIHOLE_DIR=__HOME__/pihole
+Environment=ADGUARD_DIR=__HOME__/adguard
+ExecStart=__RECONCILE_SH__

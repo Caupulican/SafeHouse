@@ -41,15 +41,18 @@ Append the URL to `blocklists/adlists.txt`, then `./scripts/load-blocklists.sh`.
 - **Adult / NSFW** is covered network-wide by the **HaGeZi NSFW adlist URL** in `adlists.txt` — a
   referenced list, never domain literals in this (public) repo. It downloads with every gravity
   rebuild, so the weekly auto-update keeps it fresh.
-- **YouTube — on-demand, per-machine (hosts layer):** YouTube is **allowed by default**. To block it
-  on the Windows machine on demand, run (elevated PowerShell, self-elevates):
+- **YouTube — on-demand (both lanes):** YouTube is **allowed by default**. To block it on demand,
+  run (elevated PowerShell, self-elevates):
   ```powershell
   C:\SafeHouse\python\python.exe -m safehouse_setup toggle youtube --block   # apply
   C:\SafeHouse\python\python.exe -m safehouse_setup toggle youtube --allow   # remove
   C:\SafeHouse\python\python.exe -m safehouse_setup toggle youtube           # status
   ```
-  It edits the live hosts file (idempotent, byte-preserving), flushes DNS, and reads its host list from
-  `windows/parental-blocks/youtube.txt`. See [../windows/README.md](../windows/README.md) §5.
+  It drives the **hosts file** (Windows applications) *and* the **resolver** (AdGuard Home
+  blocked services), and prints both. The resolver lane is the one that covers the Google Play
+  Games VM and every phone on the network — the hosts file structurally cannot. Exit code `2`
+  means the block applied but the resolver lane is not enforcing, so coverage is incomplete.
+  See [../windows/README.md](../windows/README.md) §5.
   **Network-layer alternative:** uncomment the `# --- YouTube family ---` regexes in
   `blocklists/parental-denylist.txt` and run `./scripts/load-blocklists.sh` (they ship commented-out).
 - Verify parental:
@@ -151,22 +154,54 @@ docker exec pihole pihole reloadlists
 ```
 
 ## Reboot behavior
-1. Log in -> the `SafeHouse-DNS` task runs the WSL stack reconciler, re-binds both DNS containers,
-   updates AdGuard's Pi-hole upstream, and refreshes
-   the active adapter DNS plus the global Windows DNS Client NRPT rule.
-2. **Open Google Play Games *after* login** so the VM picks up Pi-hole.
-3. Check it ran and the default Windows resolver is filtered:
+
+Two independent halves, and it matters which does what — believing the Windows side
+restarts the containers is what let a fourteen-hour outage go unnoticed on 2026-08-01.
+
+1. **Windows side.** At logon the `SafeHouse-DNS` task starts the loopback relay
+   (`safehouse_setup serve`). That is *all* it does: it tracks WSL's changing NAT address
+   and forwards `127.0.0.1:53` to it. It does **not** start the containers, and if the
+   resolver does not answer it **fails open to the LAN router** — resolution keeps working
+   with nothing filtered behind it. Run `python -m safehouse_setup dns` to re-point the
+   adapter and reconcile the stack; it now prints a `NO FILTERING` banner when it ends up
+   on the router instead of the filter.
+2. **WSL side.** The `safehouse-dns.timer` watchdog runs `reconcile-dns.sh` 15s after boot
+   and every 5 minutes after that, which is what actually brings Pi-hole and AdGuard Home
+   back. A normal `deploy.sh --with-adguard` installs it automatically; use
+   `./scripts/install-dns-service.sh` directly only to repair its systemd units.
+
+   Do not rely on `restart: unless-stopped` alone. It is set on both containers and it is
+   not sufficient: a dockerd restart left AdGuard Home dead with `RestartCount=0` while
+   Pi-hole recovered, and an identical restart minutes later recovered both. The
+   reconciler is idempotent, so the watchdog covers whichever way it fails.
+3. **Open Google Play Games *after* login** so the VM picks up the resolver.
+4. Check the Windows resolver is actually filtered — not merely working:
    ```powershell
    Get-ScheduledTaskInfo -TaskName SafeHouse-DNS
    Get-DnsClientNrptRule | Where-Object Comment -like 'SafeHouse:*'
-   Resolve-DnsName doubleclick.net -Type A   # -> 0.0.0.0
+   Resolve-DnsName doubleclick.net -Type A   # -> 0.0.0.0   (if this returns a real
+                                             #    address, filtering is OFF)
    Resolve-DnsName example.com -Type A       # -> real addresses
    ```
+   And in WSL: `systemctl list-timers safehouse-dns.timer && docker ps`
 
 ## Troubleshooting
-- **No internet after reboot:** the failsafe targets both adapter DNS and the NRPT rule at the
-  auto-detected gateway; check the log, ensure WSL/docker started, then re-run the task:
-  `Start-ScheduledTask -TaskName SafeHouse-DNS`.
+- **Ads came back everywhere (and YouTube/parental blocks stopped working):** suspect the
+  filter is not in the path at all rather than a missing blocklist entry. The relay fails
+  open to the router, so this looks exactly like a healthy machine. Check in WSL:
+  ```bash
+  docker ps                                   # both pihole and adguardhome must be Up
+  systemctl list-timers safehouse-dns.timer   # the watchdog must be active
+  ~/.local/bin/safehouse-reconcile-dns        # idempotent; brings the chain back
+  ```
+  Then on Windows confirm `Resolve-DnsName doubleclick.net` returns `0.0.0.0`. This was
+  the 2026-08-01 outage: WSL shut down at 01:12, both containers stayed down because they
+  carried `RestartPolicy=no`, and the in-game ads in the Play Games VM returned while
+  every other signal looked fine.
+- **No internet after reboot:** first run `Start-ScheduledTask -TaskName SafeHouse-DNS`.
+  If its loopback listener still does not answer, run `safehouse_setup persist` again; it
+  refuses to change adapter DNS until the relay is verified. `safehouse_setup dns` resets
+  both address families to DHCP whenever that listener is unavailable.
 - **Container won't start:** `cd ~/pihole && docker compose logs --tail=50`. Usually a stale
   `PIHOLE_BIND_IP` in `.env`: fix it to `hostname -I`'s first IP and `docker compose up -d`.
 - **Dashboard unreachable from Windows:** TCP localhost forwarding → http://localhost:8053/admin.

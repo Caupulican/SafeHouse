@@ -16,6 +16,7 @@ class FakePlatform:
         now: int = 1_800_000_000,
         hosts_blocked: bool = False,
         resolver: bool | None = None,
+        persistent_blocked: bool = False,
     ) -> None:
         self._today = today
         self._now = now
@@ -23,6 +24,7 @@ class FakePlatform:
         # None = resolver lane disarmed, which is the default so that tests written
         # before the lane existed keep describing a single-layer machine.
         self._resolver_blocked = resolver
+        self._persistent_blocked = persistent_blocked
 
         # Observation knobs a test drives.
         self.resolved: list[str] = []
@@ -62,6 +64,9 @@ class FakePlatform:
             return None
         return self._resolver_blocked
 
+    def persistent_blocked(self) -> bool:
+        return self._persistent_blocked
+
     def resolved_youtube_ips(self, since_epoch: int) -> list[tuple[str, bool]]:
         self.calls.append(f"resolved_youtube_ips(since={since_epoch})")
         # Tests may set plain IPs or (ip, is_video) pairs.
@@ -81,10 +86,10 @@ class FakePlatform:
             self.metered = sorted(ips)
         return self.meter_ok
 
-    def block_hosts(self) -> str:
+    def block_hosts(self, owner: str = "budget") -> str:
         """Drives every armed layer, like the real one -- each independently, so a tick
         that finds one layer already applied still repairs the other."""
-        self.calls.append("block_hosts")
+        self.calls.append("block_hosts" if owner == "budget" else f"block_hosts(owner={owner})")
         result = "ALREADY" if self._hosts_blocked else "BLOCKED"
         self._hosts_blocked = True
         if self._resolver_blocked is not None and not self.resolver_unreachable:
@@ -93,6 +98,8 @@ class FakePlatform:
 
     def unblock_hosts(self, scope: str = "auto") -> str:
         self.calls.append(f"unblock_hosts(scope={scope})")
+        if scope == "auto" and self._persistent_blocked:
+            return "MANUAL_HOLD"
         result = "UNBLOCKED" if self._hosts_blocked else "NONE"
         self._hosts_blocked = False
         if self._resolver_blocked is not None and not self.resolver_unreachable:

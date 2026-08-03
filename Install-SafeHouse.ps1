@@ -23,9 +23,9 @@
       2. Runs scripts/deploy.sh inside WSL: installs Docker if missing, brings up
          Pi-hole and AdGuard Home, loads the blocklists, configures AdGuard
          non-interactively (upstream, parental settings, ad-SDK filter lists).
-      3. Detects the WSL IP and points the Windows resolver at it — adapter DNS plus
-         a global NRPT rule, because the adapter setting alone is ignored when the
-         router advertises an IPv6 resolver.
+      3. Starts a Windows-local DNS relay, verifies the filtering chain through it, and
+         only then points adapter DNS at loopback. If filtering is unavailable, DNS
+         stays on the router so the Ethernet connection remains usable.
       4. Stages the Windows scripts to C:\SafeHouse.
       5. Vendors an embeddable Python runtime (no system Python required).
       6. Installs the YouTube watch-time budget, DEFAULT 3 HOURS/DAY, as a SYSTEM
@@ -211,15 +211,25 @@ if (Test-Path $pyExe) {
 
 # --- 4b. DNS (deferred until the runtime exists) -----------------------------
 if ($script:DeferredDns -and -not $WhatIf) {
-    Write-Step 'Configuring Windows DNS (Python)...'
+    Write-Step 'Starting the DNS relay, then configuring Windows DNS (Python)...'
     if (Test-Path $pyExe) {
-        $out = & $pyExe -c "from safehouse_setup import dns; import json; print(json.dumps(dns.apply()))" 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-Ok "DNS configured: $out"
-            $persist = & $pyExe -m safehouse_setup persist 2>&1
-            if ($LASTEXITCODE -eq 0) { Write-Ok "DNS persistence armed: $persist" }
-            else { Write-Fail "DNS persistence failed: $persist" }
-        } else { Write-Fail "DNS configuration failed: $out" }
+        # Fresh installs have no listener on 127.0.0.1 yet. Pointing the adapter there
+        # first creates a live Ethernet link with broken name resolution; worse, the old
+        # fallback then stayed on the router after the relay finally started, leaving all
+        # filtering bypassed. Arm and verify the listener before changing adapter DNS.
+        $persist = & $pyExe -m safehouse_setup persist 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Fail "DNS persistence failed; adapter left unchanged: $persist"
+        } else {
+            Write-Ok "DNS persistence armed: $persist"
+            $out = & $pyExe -m safehouse_setup dns 2>&1
+            switch ($LASTEXITCODE) {
+                0 { Write-Ok "DNS configured and filtering verified: $out" }
+                2 { Write-Warn 'Filtering is unavailable; DNS stayed on the LAN router so Ethernet remains usable.'
+                    Write-Warn "  Repair the WSL stack and re-run safehouse_setup dns. Details: $out" }
+                default { Write-Fail "DNS configuration failed and rolled back: $out" }
+            }
+        }
     } else { Write-Fail 'Python runtime missing; cannot configure DNS' }
 }
 

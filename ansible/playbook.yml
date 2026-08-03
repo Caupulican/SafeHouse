@@ -5,7 +5,8 @@
 #   ansible-playbook -i inventory.ini playbook.yml -e safehouse_enable_adguard=true
 #
 # Installs docker if missing, brings up Pi-hole (and optionally AdGuard Home chained in
-# front of it), loads the blocklists and installs the weekly auto-update.
+# front of it), loads the blocklists, installs the weekly auto-update, and arms a
+# five-minute DNS-stack watchdog when AdGuard is enabled.
 #
 # The Windows admin steps -- point the adapter DNS, arm the logon task, arm the firewall
 # blocker, arm the YouTube budget -- need UAC and cannot run from here. They are printed

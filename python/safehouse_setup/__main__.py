@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 from . import browser, dns, dns_proxy, toggle
@@ -41,12 +42,13 @@ def _ps_literal(value: str | Path) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def logon_task_script(python: Path) -> str:
+def logon_task_script(python: Path, fallback: str) -> str:
     """Build the sole, silent logon registration for dynamic WSL DNS routing."""
     runtime_dir = Path(__file__).resolve().parent.parent
     return (
         f"$action=New-ScheduledTaskAction -Execute {_ps_literal(python)} "
-        f"-Argument '-m safehouse_setup serve' -WorkingDirectory {_ps_literal(runtime_dir)}; "
+        f"-Argument '-m safehouse_setup serve --fallback {fallback}' "
+        f"-WorkingDirectory {_ps_literal(runtime_dir)}; "
         "$account=\"$env:USERDOMAIN\\$env:USERNAME\"; "
         "$trigger=New-ScheduledTaskTrigger -AtLogOn -User $account; "
         "$principal=New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive "
@@ -74,12 +76,41 @@ def cmd_dns(args) -> int:
         return 0
     result = dns.apply(prefer=args.server)
     print(json.dumps(result, indent=2))
+    if result.get("ok") and not result.get("filtering"):
+        # Resolution works, so every other signal here looks healthy -- which is exactly
+        # how an unfiltered machine goes unnoticed. Say it plainly instead.
+        print(
+            "\n" + "!" * 70
+            + "\n!! NO FILTERING. DNS is using the Internet-preserving fallback, so nothing is"
+            + "\n!! blocked: in-game ads, YouTube, and the parental lists are all open."
+            + "\n!! The WSL filtering chain did not pass its sinkhole check. Repair it with:"
+            + "\n!!   wsl -- ~/.local/bin/safehouse-reconcile-dns"
+            + "\n!! then re-run this command and confirm mode=filtering-resolver.\n"
+            + "!" * 70,
+            file=sys.stderr,
+        )
+        return 2
     return 0 if result.get("ok") else 1
 
 
-def cmd_serve(_args) -> int:
+def wait_for_relay(timeout_sec: float = 15.0) -> bool:
+    """Wait until the newly-started logon task owns localhost DNS.
+
+    Task Scheduler start is asynchronous. Pointing the adapter at loopback immediately
+    after registration otherwise creates the exact transient the relay is meant to
+    prevent: a live Ethernet link with no DNS listener behind it.
+    """
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        if dns.resolves(server="127.0.0.1", timeout=1.0):
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def cmd_serve(args) -> int:
     """Run the silent relay without entering the Windows DNS configuration lock."""
-    router = dns_proxy.UpstreamRouter(wsl_ip, lambda: dns.default_route()[1])
+    router = dns_proxy.UpstreamRouter(wsl_ip, lambda: args.fallback)
     proxy = dns_proxy.DnsProxy(router)
     api_relay = dns_proxy.TcpRelay(router)
     proxy.start()
@@ -91,8 +122,8 @@ def cmd_serve(_args) -> int:
 def cmd_persist(args) -> int:
     """Run the stable loopback relay at logon.
 
-    The Windows-native loopback relay tracks WSL's changing NAT address, and the
-    containers are reconciled before Windows starts trusting that endpoint.
+    The Windows-native loopback relay tracks WSL's changing NAT address. This command
+    verifies the relay before the separate `dns` command points Windows at it.
     Runs as the logged-on user at highest privileges, which is enough for the DNS
     cmdlets and avoids a SYSTEM task that cannot see the user's WSL distro.
     """
@@ -113,10 +144,25 @@ def cmd_persist(args) -> int:
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    command = f'"{python}" -m safehouse_setup serve'
-    rc, out = powershell(logon_task_script(python), timeout=30)
+    iface_index, gateway = dns.default_route()
+    fallback = (
+        dns.fallback_resolver(iface_index, gateway)
+        if iface_index is not None else None
+    )
+    if fallback is None:
+        print("could not determine the router DNS fallback", file=sys.stderr)
+        return 1
+    command = f'"{python}" -m safehouse_setup serve --fallback {fallback}'
+    rc, out = powershell(logon_task_script(python, fallback), timeout=30)
     if rc != 0:
         print(f"could not register the task: {out.strip()[:300]}", file=sys.stderr)
+        return 1
+    if not wait_for_relay():
+        print(
+            f"{LOGON_TASK} was registered, but its localhost DNS relay did not start; "
+            "the adapter was left unchanged",
+            file=sys.stderr,
+        )
         return 1
     print(f"registered {LOGON_TASK} (silent DNS relay at every logon)")
     print(f"  runs: {command}")
@@ -141,15 +187,39 @@ def cmd_browser(args) -> int:
 
 
 def cmd_toggle(args) -> int:
-    if args.block:
-        result = toggle.block(args.name)
-        print(f"{toggle.display_name(args.name)}: {result}")
-        return 0 if result.startswith(("BLOCKED", "ALREADY")) else 1
-    if args.allow:
-        print(f"{toggle.display_name(args.name)}: {toggle.allow(args.name)}")
+    """Report both lanes always.
+
+    A single verdict is what made this command misleading: it printed the hosts lane and
+    said nothing about the resolver, so a parent got "BLOCKED" for a block the Play Games
+    VM never saw. Exit 2 means "applied, but coverage is incomplete", matching install.py.
+    """
+    label = toggle.display_name(args.name)
+    if args.block or args.allow:
+        result = toggle.block(args.name) if args.block else toggle.allow(args.name)
+        print(f"{label}:")
+        print(f"  hosts    (Windows applications)   {result.hosts}")
+        print(f"  resolver (Play Games VM, phones)  {result.resolver}")
+        if result.resolver == "BUDGET_OWNED":
+            print("\nThe resolver block belongs to the daily budget, so it stays: lifting it\n"
+                  "would hand back time already spent. Use `ctl grant <minutes>` to give more.")
+        if result.hosts_failed:
+            print(f"\nNo host list for '{args.name}' (parental-blocks/{args.name}.txt) - "
+                  "the hosts lane did nothing.", file=sys.stderr)
+            return 1
+        if not result.resolver_covered:
+            print("\n" + "!" * 70
+                  + f"\n!! RESOLVER LANE NOT ENFORCING ({result.resolver})."
+                  + "\n!! Only Windows applications are covered. The Google Play Games VM"
+                  + "\n!! runs its own resolver and every phone on this network is unaffected."
+                  + "\n!! Fix: arm the lane (adguard/bootstrap.py in WSL, then install.py),"
+                  + "\n!! and confirm the DNS chain is up (docker ps in WSL).\n"
+                  + "!" * 70, file=sys.stderr)
+            return 2
         return 0
-    blocked = toggle.status(args.name)
-    print(f"{toggle.display_name(args.name)}: {'BLOCKED' if blocked else 'allowed'}")
+    print(f"{label}:")
+    print(f"  hosts    (Windows applications)   "
+          f"{'BLOCKED' if toggle.status(args.name) else 'allowed'}")
+    print(f"  resolver (Play Games VM, phones)  {toggle.resolver_status(args.name)}")
     return 0
 
 
@@ -166,6 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     p_dns.set_defaults(func=cmd_dns)
 
     p_serve = sub.add_parser("serve", help=argparse.SUPPRESS)
+    p_serve.add_argument("--fallback", required=True, help=argparse.SUPPRESS)
     p_serve.set_defaults(func=cmd_serve)
 
     p_persist = sub.add_parser("persist", help="run the silent DNS relay at every logon")

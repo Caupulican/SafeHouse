@@ -46,6 +46,10 @@ class Observation:
     # invisible to the reconcile below, which is deliberate: a lane we cannot read is
     # also a lane we cannot fix, and retrying it every tick would only spam the log.
     resolver_blocked: bool | None = None
+    # A persistent parental toggle, independent of today's watch-time state, owns the
+    # same resolver block.  It survives midnight and only its matching allow command may
+    # release it.
+    persistent_blocked: bool = False
 
 
 # --- actions -----------------------------------------------------------------
@@ -126,7 +130,7 @@ def decide(state: State, cfg: Config, obs: Observation) -> tuple[State, list[Act
     #    Exactly one hosts action per tick, and none at all when nothing needs to change.
     limit = new.effective_limit_sec(cfg.limit_sec)
     over_budget = new.seconds_used >= limit
-    want_blocked = over_budget or new.manual_block
+    want_blocked = over_budget or new.manual_block or obs.persistent_blocked
 
     # Enforcement runs on more than one layer, and they drift independently -- the
     # resolver can be restarted, or edited by hand in its dashboard, while the hosts file
@@ -148,11 +152,20 @@ def decide(state: State, cfg: Config, obs: Observation) -> tuple[State, list[Act
     any_blocked = any(layers)
 
     if want_blocked:
+        if did_reset and obs.persistent_blocked and not over_budget and not new.manual_block:
+            # Midnight releases yesterday's budget reason even when a separate parental
+            # toggle keeps the shared resolver entry physically blocked.  Without this,
+            # the stale budget owner survives forever and `toggle --allow` later refuses
+            # to release the parent's otherwise independent hold.
+            actions.append(UnblockHosts(reason="day-reset-budget-owner"))
+            actions.append(ClearFirewall())
         if not fully_blocked:
             # "reblock" means it was supposed to be there already and something removed
             # it -- worth flagging loudly in the log. After a reset there is no such
             # expectation, so a fresh day crossing the limit is a plain "enforce".
-            expected_block = state.blocked_by_budget or state.manual_block
+            expected_block = (
+                state.blocked_by_budget or state.manual_block or obs.persistent_blocked
+            )
             reason = "reblock" if (expected_block and not did_reset) else "enforce"
             # Note this fires when a layer is *partially* applied too, e.g. hosts is
             # blocking but the resolver came back up clear. That is a reblock, not a

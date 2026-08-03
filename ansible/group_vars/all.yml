@@ -4,8 +4,8 @@
 
 # Chain AdGuard Home in front of Pi-hole. When true, AdGuard Home takes :53 on the WSL
 # IP and Pi-hole moves to :5353 as its upstream, which adds per-client policy and
-# time-of-day schedules. The Windows adapter DNS and NRPT rule keep pointing at the same
-# IP either way, so this is invisible from Windows. See docs/ADGUARD.md.
+# time-of-day schedules. The Windows adapter stays on its localhost relay either way, so
+# this is invisible from Windows. See docs/ADGUARD.md.
 safehouse_enable_adguard: false
 
 # Timezone for both containers. Also drives AdGuard Home's schedule windows -- get this

@@ -5,8 +5,8 @@ curates). It is weak at *who* and *when* — per-client policy and time-of-day s
 AdGuard Home is the opposite. So we chain them instead of choosing.
 
 ```
-Windows adapter DNS + NRPT ──► <WSL_IP>:53    AdGuard Home
-    (UNCHANGED - still the WSL IP)                 │  per-client rules
+Windows adapter DNS ──► localhost relay ──► <WSL_IP>:53  AdGuard Home
+       (stable; DHCP/router failsafe)                   │  per-client rules
                                                    │  Blocked Services (YouTube toggle)
                                                    │  schedules, forced SafeSearch
                                                    ▼  upstream
@@ -17,9 +17,10 @@ Windows adapter DNS + NRPT ──► <WSL_IP>:53    AdGuard Home
                                              1.1.1.1 / 1.0.0.1
 ```
 
-The important property: **the Windows side does not change.** The adapter DNS and the
-global NRPT rule already point at the WSL `eth0` IP. AdGuard Home simply takes over `:53`
-on that IP and Pi-hole moves down to `:5353`. No `safehouse_setup dns` re-run, no NRPT edit.
+The important property: **the Windows policy endpoint does not change.** Adapter DNS
+stays on localhost while the relay follows WSL's current `eth0` address. AdGuard Home
+owns `:53` there and Pi-hole owns `:5353`; no adapter rewrite is needed when WSL's NAT
+address changes.
 
 ## Setup
 

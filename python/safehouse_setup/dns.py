@@ -18,8 +18,10 @@ catastrophe.
 from __future__ import annotations
 
 import json
+import ipaddress
 import re
 import socket
+import struct
 import time
 
 from .winutil import (
@@ -116,6 +118,25 @@ def adapter_dns_servers(iface: str, family: str) -> list[str] | None:
     return [value for value in parsed if isinstance(value, str)] if isinstance(parsed, list) else None
 
 
+def fallback_resolver(iface_index: int, gateway: str | None) -> str | None:
+    """Best non-SafeHouse IPv4 resolver to capture for the loopback relay.
+
+    DHCP may advertise resolvers that are not the default gateway. Capture that real
+    value before adapter DNS is changed; on an upgrade where loopback is already set,
+    the gateway remains the last-resort candidate.
+    """
+    iface = interface_name(iface_index) or str(iface_index)
+    for value in adapter_dns_servers(iface, "IPv4") or []:
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            continue
+        if (address.version == 4 and not address.is_loopback
+                and not address.is_unspecified and not address.is_multicast):
+            return str(address)
+    return gateway
+
+
 def set_adapter_dns(iface: str, server: str) -> bool:
     if adapter_dns_servers(iface, "IPv4") == [server]:
         return True
@@ -131,6 +152,12 @@ def set_adapter_dns_v6(iface: str, server: str) -> bool:
     ok, _ = run([NETSH, "interface", "ipv6", "set", "dnsservers",
                  f"name={iface}", "static", server, "primary", "validate=no"],
                 timeout=30)
+    return ok == 0
+
+
+def reset_adapter_dns(iface: str) -> bool:
+    ok, _ = run([NETSH, "interface", "ipv4", "set", "dnsservers",
+                 f"name={iface}", "source=dhcp"], timeout=30)
     return ok == 0
 
 
@@ -209,8 +236,8 @@ def resolves(name: str = "example.com", server: str | None = None,
     return rc == 0
 
 
-def _probe_server(server: str, name: str, timeout: float) -> bool:
-    """Minimal DNS/A query, so no third-party resolver library is needed."""
+def _query_server(server: str, name: str, timeout: float) -> bytes | None:
+    """Return one minimal DNS/A response, with no third-party resolver dependency."""
     qname = b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\x00"
     packet = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + qname + b"\x00\x01\x00\x01"
     try:
@@ -218,17 +245,84 @@ def _probe_server(server: str, name: str, timeout: float) -> bool:
             sock.settimeout(timeout)
             sock.sendto(packet, (server, 53))
             data, _ = sock.recvfrom(512)
-            return len(data) > 12 and data[0:2] == b"\x12\x34"
+            return data if len(data) > 12 and data[0:2] == b"\x12\x34" else None
     except OSError:
+        return None
+
+
+def _probe_server(server: str, name: str, timeout: float) -> bool:
+    return _query_server(server, name, timeout) is not None
+
+
+def _skip_dns_name(packet: bytes, offset: int) -> int | None:
+    """Return the first byte after one possibly-compressed DNS name."""
+    while offset < len(packet):
+        length = packet[offset]
+        if length & 0xC0 == 0xC0:
+            return offset + 2 if offset + 2 <= len(packet) else None
+        offset += 1
+        if length == 0:
+            return offset
+        if length & 0xC0 or offset + length > len(packet):
+            return None
+        offset += length
+    return None
+
+
+def _response_is_sinkholed(packet: bytes | None) -> bool:
+    """Whether an answer contains the IPv4 or IPv6 unspecified sinkhole address."""
+    if packet is None or len(packet) < 12:
         return False
+    try:
+        questions, answers = struct.unpack("!HH", packet[4:8])
+        offset = 12
+        for _ in range(questions):
+            offset = _skip_dns_name(packet, offset)
+            if offset is None or offset + 4 > len(packet):
+                return False
+            offset += 4
+        for _ in range(answers):
+            offset = _skip_dns_name(packet, offset)
+            if offset is None or offset + 10 > len(packet):
+                return False
+            record_type, _record_class, _ttl, size = struct.unpack(
+                "!HHIH", packet[offset:offset + 10]
+            )
+            offset += 10
+            if offset + size > len(packet):
+                return False
+            value = packet[offset:offset + size]
+            if ((record_type == 1 and size == 4 and value == b"\x00" * 4)
+                    or (record_type == 28 and size == 16 and value == b"\x00" * 16)):
+                return True
+            offset += size
+    except (IndexError, struct.error):
+        return False
+    return False
+
+
+def _probe_filter(server: str, timeout: float = 3.0) -> bool:
+    """Prove this endpoint filters, rather than merely proving that DNS answers."""
+    return _response_is_sinkholed(_query_server(server, "doubleclick.net", timeout))
 
 
 def apply(prefer: str | None = None, wait_for_wsl: int = 8,
           verify_system: bool = True) -> dict:
-    """Point Windows at the filtering resolver, falling back to the router.
+    """Point Windows at the filtering relay, falling back without breaking DNS.
 
     Returns a summary dict. Never leaves the machine unable to resolve: if the chosen
     server does not work, the NRPT rule is removed and the adapter falls back.
+
+    Two separate questions, two separate keys, because they have different answers and
+    conflating them hid a real outage for fourteen hours:
+
+      * `ok`        -- can this machine resolve at all? The safety property above.
+      * `filtering` -- is it resolving through the *filter*? False in either failsafe,
+                       where DNS works and nothing is blocked.
+
+    `ok` is deliberately True in a failsafe: the fallback did its job. But a caller that
+    reads only `ok` sees success on a machine where every ad and blocked site resolves.
+    Callers must report `filtering` too.
     """
     iface_index, gateway = default_route()
     if iface_index is None:
@@ -238,24 +332,35 @@ def apply(prefer: str | None = None, wait_for_wsl: int = 8,
     # A native Windows relay makes localhost the stable policy endpoint. The relay owns
     # WSL NAT address churn and fails open to the router if the guest is unavailable.
     _ = wait_for_wsl  # Kept for API compatibility with older callers.
-    target, mode = gateway, "router-failsafe"
     stack_reconciled = reconcile_wsl_dns_stack()
     resolver = prefer or "127.0.0.1"
-    if stack_reconciled and _probe_server(resolver, "example.com", 3.0):
+    relay_answering = _probe_server(resolver, "example.com", 3.0)
+    filtering = stack_reconciled and relay_answering and _probe_filter(resolver, 3.0)
+    if filtering:
         target, mode = resolver, "filtering-resolver"
+    elif prefer is None and relay_answering:
+        # Keep Windows on the relay: requests fail open through its captured fallback
+        # now, and automatically return to WSL as soon as its background discovery sees
+        # the recovered stack. No adapter rewrite and no Ethernet/DNS outage are needed.
+        target, mode = resolver, "relay-failsafe"
+    else:
+        target, mode = None, "router-failsafe"
 
     # Retire NRPT before validating the replacement. Leaving a stale rule installed is
     # enough to hang Resolve-DnsName even when both configured servers answer directly.
     set_nrpt(None)
-    adapter_ok = set_adapter_dns(iface, target)
-    adapter_v6_ok = set_adapter_dns_v6(iface, "::1") if adapter_ok else False
+    adapter_ok = set_adapter_dns(iface, target) if target else reset_adapter_dns(iface)
+    adapter_v6_ok = (
+        set_adapter_dns_v6(iface, "::1")
+        if adapter_ok and target == "127.0.0.1"
+        else reset_adapter_dns_v6(iface) if adapter_ok else False
+    )
     if not adapter_ok or not adapter_v6_ok:
-        if gateway:
-            set_adapter_dns(iface, gateway)
+        reset_adapter_dns(iface)
         reset_adapter_dns_v6(iface)
         flush_dns()
         return {"mode": "rolled-back", "interface": iface, "resolver": resolver,
-                "dns": gateway, "ok": False,
+                "dns": "dhcp", "ok": False, "filtering": False,
                 "stack_reconciled": stack_reconciled}
     disable_browser_doh()
     flush_dns()
@@ -265,16 +370,16 @@ def apply(prefer: str | None = None, wait_for_wsl: int = 8,
         time.sleep(2)
         if not resolves():
             set_nrpt(None)
-            if gateway:
-                set_adapter_dns(iface, gateway)
+            reset_adapter_dns(iface)
             reset_adapter_dns_v6(iface)
             flush_dns()
             return {"mode": "rolled-back", "interface": iface, "resolver": resolver,
-                    "dns": gateway, "ok": False,
+                    "dns": "dhcp", "ok": False, "filtering": False,
                     "stack_reconciled": stack_reconciled}
 
-    return {"mode": mode, "interface": iface, "resolver": resolver, "dns": target,
-            "ok": True, "stack_reconciled": stack_reconciled}
+    return {"mode": mode, "interface": iface, "resolver": resolver,
+            "dns": target or "dhcp", "ok": True, "filtering": filtering,
+            "stack_reconciled": stack_reconciled}
 
 
 def clear() -> None:

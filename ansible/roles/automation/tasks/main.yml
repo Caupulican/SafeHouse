@@ -1,5 +1,5 @@
 ---
-# Install the weekly blocklist auto-update schedule on the Pi-hole host.
+# Install the recurring maintenance schedules on the filtering host.
 # The installer prefers a systemd timer and falls back to a cron drop-in; it needs root
 # (become) to write under /etc, and runs the job as the connecting user so it keeps
 # docker-group access and repo ownership.
@@ -14,3 +14,22 @@
 - name: Auto-update schedule result
   ansible.builtin.debug:
     msg: "{{ _autoupdate.stdout_lines | default(['auto-update schedule installed']) }}"
+
+# The Windows relay intentionally fails open to the router when WSL is unavailable, so
+# a dead container does not masquerade as a dead Ethernet connection.  That makes this
+# WSL-side watchdog part of enforcement: it is what restores filtering after the safe
+# fallback has kept ordinary DNS alive.
+- name: Install the DNS stack watchdog (boot and every five minutes)
+  ansible.builtin.command: "{{ repo_dir }}/scripts/install-dns-service.sh"
+  become: true
+  environment:
+    SAFEHOUSE_RUN_USER: "{{ ansible_user_id }}"
+    SAFEHOUSE_RUN_HOME: "{{ ansible_env.HOME }}"
+  changed_when: true
+  register: _dns_watchdog
+  when: safehouse_enable_adguard | default(false) | bool
+
+- name: DNS watchdog result
+  ansible.builtin.debug:
+    msg: "{{ _dns_watchdog.stdout_lines | default(['DNS watchdog installed']) }}"
+  when: safehouse_enable_adguard | default(false) | bool

@@ -16,6 +16,17 @@ DNS_PORT = 53
 UPSTREAM_TIMEOUT = 2.0
 ADGUARD_RELAY_PORT = 3000
 REFRESH_COOLDOWN_SEC = 1.0
+SIO_UDP_CONNRESET = 0x9800000C
+
+
+def disable_udp_connreset(sock: socket.socket) -> None:
+    """Best-effort Windows UDP reset suppression; unsupported runtimes may reject it."""
+    if not hasattr(sock, "ioctl"):
+        return
+    try:
+        sock.ioctl(SIO_UDP_CONNRESET, False)
+    except (OSError, ValueError):
+        pass
 
 
 def udp_exchange(server: str, packet: bytes, timeout: float) -> bytes | None:
@@ -65,6 +76,8 @@ class UpstreamRouter:
         self._primary: str | None = None
         self._degraded = False
         self._last_refresh = 0.0
+        self._refreshing = False
+        self._refresh_done = threading.Event()
         self._lock = threading.Lock()
 
     def _mark_degraded(self) -> None:
@@ -85,25 +98,44 @@ class UpstreamRouter:
 
     def _get_primary(self) -> str | None:
         with self._lock:
-            if self._primary is not None:
-                return self._primary
-            now = time.monotonic()
-            if now - self._last_refresh < REFRESH_COOLDOWN_SEC:
-                return None
-            self._primary = self._primary_supplier()
-            if self._primary is None:
-                self._last_refresh = time.monotonic()
-            return self._primary
+            primary = self._primary
+        if primary is None:
+            self._schedule_refresh()
+        return primary
 
     def _refresh_primary(self) -> str | None:
-        """Single-flight WSL discovery; callers arriving together reuse one result."""
+        """Invalidate a failed address and refresh it without blocking DNS traffic."""
+        with self._lock:
+            self._primary = None
+        self._schedule_refresh()
+        return None
+
+    def _schedule_refresh(self) -> None:
+        """Start at most one WSL lookup; request workers must never wait for wsl.exe."""
         with self._lock:
             now = time.monotonic()
-            if now - self._last_refresh < REFRESH_COOLDOWN_SEC:
-                return self._primary
-            self._primary = self._primary_supplier()
-            self._last_refresh = time.monotonic()
-            return self._primary
+            if self._refreshing or now - self._last_refresh < REFRESH_COOLDOWN_SEC:
+                return
+            self._refreshing = True
+            self._last_refresh = now
+            self._refresh_done.clear()
+
+        def discover() -> None:
+            try:
+                primary = self._primary_supplier()
+            except Exception:
+                primary = None
+            with self._lock:
+                self._primary = primary
+                self._last_refresh = time.monotonic()
+                self._refreshing = False
+                self._refresh_done.set()
+
+        threading.Thread(
+            target=discover,
+            name="safehouse-wsl-discovery",
+            daemon=True,
+        ).start()
 
     def exchange_udp(self, packet: bytes) -> bytes | None:
         first = self._get_primary()
@@ -144,6 +176,7 @@ class UpstreamRouter:
         return None
 
     def connect_primary(self, port: int, timeout: float = 5.0) -> socket.socket | None:
+        started = time.monotonic()
         first = self._get_primary()
         candidates = [first] if first else []
         for server in candidates:
@@ -153,10 +186,24 @@ class UpstreamRouter:
                 return connected
             except OSError:
                 pass
-        refreshed = self._refresh_primary()
+        if first:
+            self._refresh_primary()
+        else:
+            # `_get_primary` already started discovery. Do not invalidate a result that
+            # may have landed between that return and this line.
+            self._schedule_refresh()
+        # API calls are not on the DNS request path, so they can wait briefly for the
+        # already-asynchronous WSL discovery. Without this, the first YouTube toggle
+        # after logon always hit a deliberate empty cache and failed UNREACHABLE even
+        # though AdGuard was healthy milliseconds later.
+        remaining = max(0.0, timeout - (time.monotonic() - started))
+        self._refresh_done.wait(remaining)
+        with self._lock:
+            refreshed = self._primary
         if refreshed and refreshed not in candidates:
             try:
-                connected = socket.create_connection((refreshed, port), timeout=timeout)
+                remaining = max(0.001, timeout - (time.monotonic() - started))
+                connected = socket.create_connection((refreshed, port), timeout=remaining)
                 self._mark_healthy()
                 return connected
             except OSError:
@@ -182,6 +229,10 @@ class DnsProxy:
         ]
 
     def start(self) -> None:
+        # Windows reports an ICMP "port unreachable" from a departed UDP client as
+        # WSAECONNRESET on the next recvfrom(), which otherwise kills the listener.
+        for sock in self.udp_sockets:
+            disable_udp_connreset(sock)
         for sock in self.tcp_sockets:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.udp_sockets[0].bind((LISTEN_ADDRESS, DNS_PORT))
@@ -197,7 +248,10 @@ class DnsProxy:
 
     def _udp_loop(self, sock: socket.socket) -> None:
         while True:
-            packet, client = sock.recvfrom(65535)
+            try:
+                packet, client = sock.recvfrom(65535)
+            except ConnectionResetError:
+                continue
             self._submit(self._handle_udp, sock, packet, client)
 
     def _submit(self, handler, *args) -> bool:

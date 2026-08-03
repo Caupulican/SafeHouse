@@ -353,6 +353,41 @@ def test_real_platform_reset_still_happens_on_reconfigure(tmp_path):
 # --- the resolver lane, end to end -------------------------------------------
 
 
+def test_tick_leaves_a_persistent_parental_block_alone_under_budget(tmp_path):
+    plat = FakePlatform(hosts_blocked=True, resolver=True, persistent_blocked=True)
+    t, _ = make(tmp_path, plat)
+
+    t.run()
+
+    assert not any(c.startswith("unblock_hosts") for c in plat.calls)
+    assert plat.resolver_blocked() is True
+
+
+def test_tick_repairs_a_persistent_parental_block_as_manual(tmp_path):
+    plat = FakePlatform(hosts_blocked=False, resolver=False, persistent_blocked=True)
+    t, _ = make(tmp_path, plat)
+
+    t.run()
+
+    assert "block_hosts(owner=manual)" in plat.calls
+    assert plat.resolver_blocked() is True
+
+
+def test_new_day_releases_budget_ownership_but_keeps_persistent_block(tmp_path):
+    plat = FakePlatform(hosts_blocked=True, resolver=True, persistent_blocked=True)
+    t, _ = make(tmp_path, plat)
+    statemod.save(
+        Paths.under(tmp_path).state,
+        State(date="2026-07-24", seconds_used=10_800, blocked_by_budget=True),
+    )
+
+    result = t.run()
+
+    assert result.state.blocked_by_budget is False
+    assert "unblock_hosts(scope=auto)" in plat.calls
+    assert plat.resolver_blocked() is True
+
+
 def test_tick_repairs_a_resolver_lane_that_drifted_open(tmp_path):
     """A parent clears the YouTube service in the AdGuard dashboard while the child is
     still over budget. The next tick must put it back rather than trust the hosts file."""

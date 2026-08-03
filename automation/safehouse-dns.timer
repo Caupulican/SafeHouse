@@ -1,0 +1,22 @@
+# SafeHouse DNS stack watchdog: shortly after boot, then every 5 minutes.
+#
+# OnBootSec covers the case that actually broke this machine -- WSL shuts down, systemd
+# and dockerd come back, and the containers do not. OnUnitActiveSec covers the stack dying
+# mid-session, which is the same outage with a different trigger.
+#
+# 5 minutes is chosen against the cost of being wrong: an unfiltered minute is an ad or an
+# unblocked site, and the reconcile is a no-op when the chain is already healthy. Widen it
+# by editing OnUnitActiveSec (see `man systemd.time`), then:
+#   sudo systemctl daemon-reload && sudo systemctl restart safehouse-dns.timer
+[Unit]
+Description=SafeHouse DNS stack watchdog (recover the filtering chain at boot and every 5 min)
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=5min
+# The filter is only useful when it is running now; a missed tick while the machine was
+# off does not need replaying on the next boot, because OnBootSec already covers that.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

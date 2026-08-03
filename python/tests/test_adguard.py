@@ -14,7 +14,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from safehouse_ytbudget.platform.adguard import AdGuardClient, AdGuardConfig
+from safehouse_ytbudget.platform.adguard import (
+    BUDGET_OWNER,
+    MANUAL_OWNER,
+    AdGuardClient,
+    AdGuardConfig,
+    add_block_owner,
+    read_block_owners,
+)
 from safehouse_ytbudget.platform.windows import WindowsPlatform
 
 
@@ -50,6 +57,14 @@ def server():
                 return self._respond(state.fail_with, {"message": "nope"})
             if self.path == "/control/blocked_services/get":
                 return self._respond(200, {"schedule": state.schedule, "ids": state.ids})
+            if self.path == "/control/blocked_services/all":
+                return self._respond(200, {
+                    "blocked_services": [
+                        {"id": "youtube", "name": "YouTube"},
+                        {"id": "tiktok", "name": "TikTok"},
+                    ],
+                    "groups": [],
+                })
             self._respond(404)
 
         def do_PUT(self):
@@ -95,6 +110,11 @@ def test_sends_basic_auth(server):
     assert state.auth_seen == expected
 
 
+def test_lists_only_service_ids_the_resolver_actually_supports(server):
+    client, _ = server
+    assert client.known_service_ids() == {"youtube", "tiktok"}
+
+
 # --- writing -----------------------------------------------------------------
 
 
@@ -131,6 +151,35 @@ def test_screen_time_uses_adguard_without_mutating_the_hosts_file(server, tmp_pa
     assert "adguard=UNBLOCKED" in platform.unblock_hosts()
     assert state.ids == []
     assert hosts.read_bytes() == original
+
+
+def test_budget_release_keeps_a_persistent_parental_block(server, tmp_path):
+    client, state = server
+    state.ids = ["youtube"]
+    marker = tmp_path / "adguard-block-state.json"
+    add_block_owner(marker, "2026-07-25", MANUAL_OWNER)
+    platform = WindowsPlatform(root=tmp_path, log_path=tmp_path / "watcher.log",
+                               adguard=client)
+
+    assert platform.unblock_hosts("auto") == "adguard=MANUAL_HOLD"
+    assert state.ids == ["youtube"]
+    assert read_block_owners(marker) == {MANUAL_OWNER}
+
+
+def test_budget_block_adds_its_reason_without_erasing_the_parent(server, tmp_path):
+    client, state = server
+    state.ids = ["youtube"]
+    marker = tmp_path / "adguard-block-state.json"
+    add_block_owner(marker, "2026-07-24", MANUAL_OWNER)
+    platform = WindowsPlatform(root=tmp_path, log_path=tmp_path / "watcher.log",
+                               adguard=client)
+    platform.today = lambda: "2026-07-25"
+
+    assert platform.block_hosts() == "adguard=ALREADY"
+    assert read_block_owners(marker) == {BUDGET_OWNER, MANUAL_OWNER}
+    assert platform.unblock_hosts("auto") == "adguard=MANUAL_HOLD"
+    assert state.ids == ["youtube"]
+    assert read_block_owners(marker) == {MANUAL_OWNER}
 
 
 def test_blocking_twice_is_reported_as_already(server):

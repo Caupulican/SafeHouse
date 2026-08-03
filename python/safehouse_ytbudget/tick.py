@@ -164,6 +164,7 @@ class Ticker:
                 watching=sample_usable and self._meter.is_watching(),
                 hosts_blocked=self.platform.hosts_blocked(),
                 resolver_blocked=self.platform.resolver_blocked(),
+                persistent_blocked=self.platform.persistent_blocked(),
                 pinned_ips=current,
                 firewall_ips=tuple(self.platform.firewall_ips()),
             ),
@@ -172,7 +173,8 @@ class Ticker:
 
     # --- application ---------------------------------------------------------
 
-    def _apply(self, actions: list[Action], st: State, limit_sec: int) -> None:
+    def _apply(self, actions: list[Action], st: State, limit_sec: int,
+               *, persistent_blocked: bool = False) -> None:
         for action in actions:
             match action:
                 case ResetDay(previous=prev, today=today):
@@ -180,7 +182,15 @@ class Ticker:
                 case CreditTime():
                     pass  # already folded into the state; logged once per tick below
                 case BlockHosts(reason=reason):
-                    res = self.platform.block_hosts()
+                    # The AdGuard service list is flat, so the local marker carries the
+                    # reasons independently.  A drift repair for a persistent parental
+                    # hold must not invent a budget owner that later prevents --allow.
+                    owner = (
+                        "budget"
+                        if st.blocked_by_budget or st.manual_block
+                        else "manual" if persistent_blocked else "budget"
+                    )
+                    res = self.platform.block_hosts(owner=owner)
                     if reason == "reblock":
                         # Deliberately does not name a layer: this fires when EITHER the
                         # hosts file or the resolver has drifted open, and the status in
@@ -217,7 +227,12 @@ class Ticker:
         new_state, actions = decide(st, self.cfg, obs)
         limit_sec = new_state.effective_limit_sec(self.cfg.limit_sec)
 
-        self._apply(actions, new_state, limit_sec)
+        self._apply(
+            actions,
+            new_state,
+            limit_sec,
+            persistent_blocked=obs.persistent_blocked,
+        )
 
         statemod.save(self.paths.state, new_state)
         pinmod.save(self.paths.pins, self._pins)

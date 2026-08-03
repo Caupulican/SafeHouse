@@ -113,6 +113,35 @@ def test_manual_block_does_not_set_blocked_by_budget():
     assert st.blocked_by_budget is False
 
 
+def test_persistent_parental_block_is_not_lifted_under_budget():
+    _, acts = decide(
+        State(date=TODAY, seconds_used=0),
+        CFG,
+        obs(hosts_blocked=True, resolver_blocked=True, persistent_blocked=True),
+    )
+    assert not any(isinstance(a, UnblockHosts) for a in acts)
+
+
+def test_persistent_parental_block_is_repaired_with_its_own_reason():
+    _, acts = decide(
+        State(date=TODAY, seconds_used=0),
+        CFG,
+        obs(hosts_blocked=False, resolver_blocked=False, persistent_blocked=True),
+    )
+    assert BlockHosts(reason="reblock") in acts
+
+
+def test_new_day_releases_only_the_budget_reason_behind_a_persistent_block():
+    _, acts = decide(
+        State(date="2026-07-24", seconds_used=10800, blocked_by_budget=True),
+        CFG,
+        obs(hosts_blocked=True, resolver_blocked=True, persistent_blocked=True),
+    )
+    assert UnblockHosts(reason="day-reset-budget-owner") in acts
+    assert ClearFirewall() in acts
+    assert not any(isinstance(a, BlockHosts) for a in acts)
+
+
 # --- day reset ---------------------------------------------------------------
 
 

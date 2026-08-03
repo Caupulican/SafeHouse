@@ -42,6 +42,24 @@ def test_adapter_dns_setters_do_not_rewrite_an_already_correct_adapter(
     assert setter("Ethernet", server) is True
 
 
+def test_relay_captures_dhcp_dns_instead_of_assuming_the_gateway_is_dns(monkeypatch):
+    monkeypatch.setattr(dns, "interface_name", lambda _index: "Ethernet")
+    monkeypatch.setattr(
+        dns,
+        "adapter_dns_servers",
+        lambda _iface, family: ["10.20.30.40", "10.20.30.1"] if family == "IPv4" else [],
+    )
+    assert dns.fallback_resolver(5, "10.20.30.1") == "10.20.30.40"
+
+
+def test_relay_uses_gateway_when_adapter_is_already_on_safehouse(monkeypatch):
+    monkeypatch.setattr(dns, "interface_name", lambda _index: "Ethernet")
+    monkeypatch.setattr(
+        dns, "adapter_dns_servers", lambda _iface, _family: ["127.0.0.1"]
+    )
+    assert dns.fallback_resolver(5, "192.168.50.1") == "192.168.50.1"
+
+
 def test_apply_reconciles_stack_before_probing_stable_localhost(monkeypatch):
     events: list[str] = []
     monkeypatch.setattr(
@@ -56,6 +74,11 @@ def test_apply_reconciles_stack_before_probing_stable_localhost(monkeypatch):
         dns,
         "_probe_server",
         lambda server, *_args: events.append(f"probe:{server}") or True,
+    )
+    monkeypatch.setattr(
+        dns,
+        "_probe_filter",
+        lambda server, *_args: events.append(f"filter:{server}") or True,
     )
     monkeypatch.setattr(dns, "set_adapter_dns", lambda *_args: True)
     v6_servers: list[str] = []
@@ -72,7 +95,7 @@ def test_apply_reconciles_stack_before_probing_stable_localhost(monkeypatch):
 
     result = dns.apply(wait_for_wsl=1)
 
-    assert events[:2] == ["reconcile", "probe:127.0.0.1"]
+    assert events[:3] == ["reconcile", "probe:127.0.0.1", "filter:127.0.0.1"]
     assert result["mode"] == "filtering-resolver"
     assert result["dns"] == "127.0.0.1"
     assert result["stack_reconciled"] is True
@@ -85,6 +108,7 @@ def test_supervised_apply_skips_the_recursive_system_probe(monkeypatch):
     monkeypatch.setattr(dns, "default_route", lambda: (5, "192.168.50.1"))
     monkeypatch.setattr(dns, "interface_name", lambda _index: "Ethernet")
     monkeypatch.setattr(dns, "_probe_server", lambda *_args: True)
+    monkeypatch.setattr(dns, "_probe_filter", lambda *_args: True)
     monkeypatch.setattr(dns, "set_adapter_dns", lambda *_args: True)
     monkeypatch.setattr(dns, "set_adapter_dns_v6", lambda *_args: True)
     monkeypatch.setattr(dns, "set_nrpt", lambda *_args: True)
@@ -97,8 +121,29 @@ def test_supervised_apply_skips_the_recursive_system_probe(monkeypatch):
     assert dns.apply(wait_for_wsl=1, verify_system=False)["ok"] is True
 
 
+def test_filter_probe_requires_a_real_sinkhole_answer(monkeypatch):
+    qname = b"\x0bdoubleclick\x03net\x00"
+    header = b"\x12\x34\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00"
+    question = qname + b"\x00\x01\x00\x01"
+    answer_prefix = b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04"
+
+    monkeypatch.setattr(
+        dns, "_query_server", lambda *_args: header + question + answer_prefix + b"\x00" * 4
+    )
+    assert dns._probe_filter("127.0.0.1") is True
+
+    monkeypatch.setattr(
+        dns, "_query_server", lambda *_args: header + question + answer_prefix + b"\x01\x02\x03\x04"
+    )
+    assert dns._probe_filter("127.0.0.1") is False
+
+
 def test_logon_relay_never_mutates_windows_dns(monkeypatch):
     events: list[str] = []
+
+    class Router:
+        def __init__(self, _primary, fallback):
+            assert fallback() == "192.168.50.1"
 
     class Proxy:
         def __init__(self, _router):
@@ -116,6 +161,14 @@ def test_logon_relay_never_mutates_windows_dns(monkeypatch):
 
     monkeypatch.setattr(setup_cli.dns_proxy, "DnsProxy", Proxy)
     monkeypatch.setattr(setup_cli.dns_proxy, "TcpRelay", Relay)
+    monkeypatch.setattr(setup_cli.dns_proxy, "UpstreamRouter", Router)
+    monkeypatch.setattr(
+        setup_cli.dns,
+        "default_route",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("DNS requests must not query Windows routing")
+        ),
+    )
     monkeypatch.setattr(
         setup_cli.dns,
         "apply",
@@ -124,7 +177,7 @@ def test_logon_relay_never_mutates_windows_dns(monkeypatch):
         ),
     )
 
-    assert setup_cli.cmd_serve(Namespace()) == 0
+    assert setup_cli.cmd_serve(Namespace(fallback="192.168.50.1")) == 0
     assert events == ["dns-start", "api-start", "wait"]
 
 
@@ -142,6 +195,11 @@ def test_persist_retires_legacy_owner_before_registering_current_task(monkeypatc
         "windowless_python",
         lambda: Path("C:/SafeHouse/python/pythonw.exe"),
     )
+    monkeypatch.setattr(setup_cli.dns, "default_route", lambda: (5, "192.168.50.1"))
+    monkeypatch.setattr(
+        setup_cli.dns, "fallback_resolver", lambda *_args: "192.168.50.1"
+    )
+    monkeypatch.setattr(setup_cli, "wait_for_relay", lambda: True)
     monkeypatch.setattr(
         setup_cli,
         "powershell",
@@ -177,6 +235,11 @@ def test_persist_registers_a_hidden_windowless_bounded_task(monkeypatch, tmp_pat
     monkeypatch.setattr(setup_cli, "is_admin", lambda: True)
     monkeypatch.setattr(setup_cli, "retire_legacy_runtime", lambda: None)
     monkeypatch.setattr(setup_cli, "windowless_python", lambda: pythonw)
+    monkeypatch.setattr(setup_cli.dns, "default_route", lambda: (5, "192.168.50.1"))
+    monkeypatch.setattr(
+        setup_cli.dns, "fallback_resolver", lambda *_args: "192.168.50.1"
+    )
+    monkeypatch.setattr(setup_cli, "wait_for_relay", lambda: True)
     monkeypatch.setattr(
         setup_cli,
         "powershell",
@@ -194,6 +257,23 @@ def test_persist_registers_a_hidden_windowless_bounded_task(monkeypatch, tmp_pat
     assert "-MultipleInstances IgnoreNew" in script
     assert "-RestartCount 3" in script
     assert "-m safehouse_setup serve" in script
+    assert "--fallback 192.168.50.1" in script
+
+
+def test_persist_refuses_to_repoint_dns_when_the_relay_did_not_start(monkeypatch, tmp_path):
+    pythonw = tmp_path / "pythonw.exe"
+    pythonw.touch()
+    monkeypatch.setattr(setup_cli, "is_admin", lambda: True)
+    monkeypatch.setattr(setup_cli, "retire_legacy_runtime", lambda: None)
+    monkeypatch.setattr(setup_cli, "windowless_python", lambda: pythonw)
+    monkeypatch.setattr(setup_cli.dns, "default_route", lambda: (5, "192.168.50.1"))
+    monkeypatch.setattr(
+        setup_cli.dns, "fallback_resolver", lambda *_args: "192.168.50.1"
+    )
+    monkeypatch.setattr(setup_cli, "powershell", lambda *_args, **_kwargs: (0, ""))
+    monkeypatch.setattr(setup_cli, "wait_for_relay", lambda: False)
+
+    assert setup_cli.cmd_persist(Namespace(remove=False)) == 1
 
 
 def test_legacy_files_are_deleted_idempotently(tmp_path, monkeypatch):

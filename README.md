@@ -62,7 +62,7 @@ specific thing the other cannot do.
    ─────────────    │  blocks ad IPs from crosvm.exe       │    never do a DNS lookup
                     └──────────────────────────────────────┘
                                     │
-   adapter DNS + NRPT rule          ▼
+   adapter DNS → localhost relay    ▼  (fails open to captured DHCP/router DNS)
                     ┌──────────────────────────────────────┐
    WSL2 (Docker)    │  AdGuard Home        :53             │  ← per-client policy,
                     │   ad-SDK + game + bypass filters     │    schedules, SafeSearch
@@ -105,7 +105,8 @@ They are good at different things, and chaining is cheaper than choosing.
   resolver rather than by guessing IP addresses.
 
 AdGuard owns `:53` and forwards everything it does not block to Pi-hole on `:5353`. From
-Windows nothing changes: the adapter and NRPT rule point at the same address either way.
+Windows nothing changes: adapter DNS stays on the stable loopback relay, which tracks
+WSL's changing NAT address and forwards into the same chain either way.
 
 ---
 
@@ -247,12 +248,12 @@ SafeHouse/
   windows/
     youtube-budget/         the watch-time budget (PowerShell, live) + Python port
     safehouse-adblock.ps1   captures VM ad traffic and builds firewall rules
-    safehouse_setup dns             adapter DNS + NRPT rule
+    safehouse_setup dns             verified loopback DNS + DHCP-safe rollback
     safehouse_setup browser        closes Opera GX's VPN and DoH
     parental-blocks/        host lists for the on-demand blocks
-  python/                 Python port of the watcher (216 tests) — see docs/PYTHON-PORT.md
+  python/                 Python port of the watcher — see docs/PYTHON-PORT.md
   ansible/                playbook + roles for the WSL side
-  scripts/                deploy.sh, blocklist loading, auto-update
+  scripts/                deploy, DNS recovery, blocklist loading, auto-update
   tools/                  SNI ad-server hunter
   docs/                   architecture, runbook, firewall, AdGuard, the port
 ```

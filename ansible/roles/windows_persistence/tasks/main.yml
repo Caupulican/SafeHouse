@@ -86,8 +86,8 @@
   ansible.builtin.debug:
     msg:
       - "Pi-hole is up. One-time ADMIN steps remain (elevated PowerShell):"
-      - "1) Point DNS:      C:\\SafeHouse\\python\\python.exe -m safehouse_setup dns"
-      - "2) Arm logon task: C:\\SafeHouse\\python\\python.exe -m safehouse_setup persist"
+      - "1) Arm relay:      C:\\SafeHouse\\python\\python.exe -m safehouse_setup persist"
+      - "2) Point DNS:      C:\\SafeHouse\\python\\python.exe -m safehouse_setup dns"
       - "3) Arm firewall:   powershell -ExecutionPolicy Bypass -File C:\\SafeHouse\\windows\\safehouse-adblock.ps1  (with ads showing)"
       - "4) (Optional) Arm YouTube budget: cd C:\\SafeHouse\\windows\\youtube-budget; C:\\SafeHouse\\python\\python.exe install.py"
       - "Then RESTART Google Play Games so the crosvm VM picks up Pi-hole. See windows/README.md."

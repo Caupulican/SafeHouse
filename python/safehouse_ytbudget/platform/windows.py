@@ -31,7 +31,14 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 from ..pins import normalise_ip
-from .adguard import AdGuardClient, write_block_date
+from .adguard import (
+    BUDGET_OWNER,
+    MANUAL_OWNER,
+    AdGuardClient,
+    add_block_owner,
+    read_block_owners,
+    remove_block_owner,
+)
 
 SYSTEM_ROOT = os.environ.get("SystemRoot", r"C:\Windows")
 PKTMON = Path(SYSTEM_ROOT) / "System32" / "PktMon.exe"
@@ -232,21 +239,32 @@ class WindowsPlatform:
             return None
         return self.adguard.is_blocked()  # already None when unreachable
 
-    def block_hosts(self) -> str:
+    def persistent_blocked(self) -> bool:
+        """A separate parental toggle owns the resolver block until explicitly lifted."""
+        return MANUAL_OWNER in read_block_owners(self.adguard_marker)
+
+    def block_hosts(self, owner: str = BUDGET_OWNER) -> str:
         """Block YouTube at the resolver, the sole screen-time enforcement owner."""
         if self.adguard is None:
             return "adguard=NOT_ARMED"
         adguard_result = self.adguard.set_blocked(True)
         if adguard_result in ("BLOCKED", "ALREADY"):
-            write_block_date(self.adguard_marker, self.today())
+            add_block_owner(self.adguard_marker, self.today(), owner)
         return f"adguard={adguard_result}"
 
     def unblock_hosts(self, scope: str = "auto") -> str:
         if self.adguard is None:
             return "adguard=NOT_ARMED"
+        owners = read_block_owners(self.adguard_marker)
+        if scope == "auto" and MANUAL_OWNER in owners:
+            # Release this controller's reason, but keep the service entry for the
+            # parent's persistent hold.  Clearing the flat AdGuard entry here is the
+            # cross-controller race that used to reopen YouTube after at most one tick.
+            remove_block_owner(self.adguard_marker, BUDGET_OWNER)
+            return "adguard=MANUAL_HOLD"
         adguard_result = self.adguard.set_blocked(False)
         if adguard_result in ("UNBLOCKED", "NONE"):
-            write_block_date(self.adguard_marker, None)
+            remove_block_owner(self.adguard_marker, BUDGET_OWNER)
         return f"adguard={adguard_result}"
 
     # --- DNS -----------------------------------------------------------------

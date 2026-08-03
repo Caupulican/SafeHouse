@@ -40,9 +40,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from safehouse_ytbudget.platform.adguard import (  # noqa: E402
+    BUDGET_OWNER,
+    MANUAL_OWNER,
     AdGuardClient,
     AdGuardConfig,
     read_block_date,
+    read_block_owners,
+    remove_block_owner,
     write_block_date,
 )
 
@@ -95,7 +99,22 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     blocked_on = read_block_date(args.marker)
+    owners = read_block_owners(args.marker)
     if not args.force:
+        if MANUAL_OWNER in owners:
+            # A parent's deliberate block, not yesterday's budget. Nothing here may lift
+            # it: "no, now" has no expiry, and only `toggle --allow` should undo it.  A
+            # stale budget claim can still be released independently while the shared
+            # AdGuard entry remains in place for the parent.
+            if blocked_on is not None and blocked_on != today:
+                remove_block_owner(args.marker, BUDGET_OWNER)
+                log(args.log,
+                    f"[hold] stale budget claim from {blocked_on} released; "
+                    "manual block remains")
+            else:
+                log(args.log,
+                    "[hold] block was applied manually - only a parent lifts it")
+            return 0
         if blocked_on == today:
             log(args.log,
                 f"[hold] block belongs to today ({today}) - leaving it in place")

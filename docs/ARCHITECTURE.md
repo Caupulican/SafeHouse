@@ -68,10 +68,11 @@ catching ad servers after they rotate IPs. Full detail in [FIREWALL.md](FIREWALL
 
 ## Persistence
 WSL2 (NAT mode) hands out a **new eth0 IP** on most reboots, so:
-- the compose binds DNS via `${PIHOLE_BIND_IP}` (injected from `.env`), so the container always
-  starts;
-- a **logon scheduled task** (`windows/`) wakes WSL, re-binds Pi-hole to the current IP, auto-detects
-  the active adapter/gateway, and refreshes both adapter DNS and the global NRPT rule;
-- if Pi-hole cannot answer, the task targets both resolver layers at the detected gateway as a
-  connectivity failsafe rather than leaving a stale WSL address;
+- both containers use host networking and remain independent of that address;
+- a Windows **logon scheduled task** keeps a stable DNS/API relay on loopback and discovers the
+  current WSL address away from request threads;
+- the relay captures the adapter's pre-SafeHouse DHCP resolver and fails open to it when WSL is
+  unavailable, so a filter outage does not make the Ethernet connection appear dead;
+- a WSL systemd watchdog reconciles the containers at boot and every five minutes, restoring the
+  filtering path without another adapter rewrite;
 - the firewall rules (layer 2) persist across reboots on their own, no task needed.

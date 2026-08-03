@@ -16,7 +16,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import adguard_daily_reset as reset  # noqa: E402
-from safehouse_ytbudget.platform.adguard import read_block_date, write_block_date  # noqa: E402
+from safehouse_ytbudget.platform.adguard import (  # noqa: E402
+    BUDGET_OWNER,
+    MANUAL_OWNER,
+    read_block_date,
+    read_block_owner,
+    read_block_owners,
+    add_block_owner,
+    write_block_date,
+)
 
 TODAY = "2026-07-25"
 YESTERDAY = "2026-07-24"
@@ -152,6 +160,48 @@ def test_missing_credentials_is_an_error(tmp_path, monkeypatch):
     assert code == 1
 
 
+# --- a parent's block is not the budget's ------------------------------------
+
+
+def test_a_manual_block_is_never_lifted(env):
+    """"No, now" has no expiry.
+
+    Without the owner stamp this block looks exactly like a stale budget block from
+    yesterday, and the nightly reset hands the site back at midnight.
+    """
+    run, marker, logp = env
+    write_block_date(marker, YESTERDAY, owner=MANUAL_OWNER)
+    client = FakeClient(blocked=True)
+
+    assert run(client=client) == 0
+    assert client.calls == []
+    assert client.blocked is True
+    assert "applied manually" in logp.read_text()
+
+
+def test_force_still_lifts_a_manual_block(env):
+    """The parent's own escape hatch stays usable."""
+    run, marker, _ = env
+    write_block_date(marker, YESTERDAY, owner=MANUAL_OWNER)
+    client = FakeClient(blocked=True)
+
+    assert run("--force", client=client) == 0
+    assert client.blocked is False
+
+
+def test_stale_budget_reason_is_released_without_lifting_a_manual_block(env):
+    run, marker, logp = env
+    write_block_date(marker, YESTERDAY, owner=BUDGET_OWNER)
+    add_block_owner(marker, TODAY, MANUAL_OWNER)
+    client = FakeClient(blocked=True)
+
+    assert run(client=client) == 0
+    assert client.calls == []
+    assert client.blocked is True
+    assert read_block_owners(marker) == {MANUAL_OWNER}
+    assert "manual block remains" in logp.read_text()
+
+
 # --- marker round trip -------------------------------------------------------
 
 
@@ -161,3 +211,28 @@ def test_marker_round_trip(tmp_path):
     assert read_block_date(p) == TODAY
     write_block_date(p, None)
     assert read_block_date(p) is None
+
+
+def test_owner_defaults_to_the_budget_for_markers_written_before_owners_existed(tmp_path):
+    """Old markers carry a date and no owner, and were always the budget's."""
+    p = tmp_path / "m.json"
+    p.write_text(json.dumps({"blocked_on": YESTERDAY}))
+    assert read_block_owner(p) == BUDGET_OWNER
+
+
+def test_owner_round_trip(tmp_path):
+    p = tmp_path / "m.json"
+    write_block_date(p, TODAY, owner=MANUAL_OWNER)
+    assert read_block_owner(p) == MANUAL_OWNER
+    write_block_date(p, None)
+    assert read_block_owner(p) is None
+
+
+def test_two_owners_keep_independent_dates(tmp_path):
+    p = tmp_path / "m.json"
+    write_block_date(p, YESTERDAY, owner=BUDGET_OWNER)
+    add_block_owner(p, TODAY, MANUAL_OWNER)
+
+    assert read_block_date(p, BUDGET_OWNER) == YESTERDAY
+    assert read_block_date(p, MANUAL_OWNER) == TODAY
+    assert read_block_owners(p) == {BUDGET_OWNER, MANUAL_OWNER}

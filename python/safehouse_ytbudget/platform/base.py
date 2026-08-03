@@ -52,6 +52,15 @@ class Platform(Protocol):
         """
         ...
 
+    def persistent_blocked(self) -> bool:
+        """Whether an independent parental toggle still requires YouTube blocked.
+
+        This is deliberately separate from the budget's today-only ``manual_block``
+        state.  A persistent toggle survives midnight and must not be mistaken for a
+        stale budget block just because both reasons share one AdGuard service entry.
+        """
+        ...
+
     def resolved_youtube_ips(self, since_epoch: int) -> list[tuple[str, bool]]:
         """(IP, is_video) pairs that YouTube-family hostnames resolved to since
         `since_epoch`. `is_video` marks a googlevideo answer -- the only names that
@@ -84,7 +93,7 @@ class Platform(Protocol):
         """
         ...
 
-    def block_hosts(self) -> str:
+    def block_hosts(self, owner: str = "budget") -> str:
         """Splice the YouTube block in. Returns a short status for the log."""
         ...
 
@@ -129,6 +138,7 @@ class ReadOnlyPlatform:
     def now_epoch(self) -> int: return self._inner.now_epoch()
     def hosts_blocked(self) -> bool: return self._inner.hosts_blocked()
     def resolver_blocked(self) -> bool | None: return self._inner.resolver_blocked()
+    def persistent_blocked(self) -> bool: return self._inner.persistent_blocked()
     def inbound_bytes(self) -> int | None: return self._inner.inbound_bytes()
     def firewall_ips(self) -> list[str]: return self._inner.firewall_ips()
 
@@ -144,8 +154,8 @@ class ReadOnlyPlatform:
         self._inner.log(f"[shadow] would {action}" + (f" {detail}" if detail is not None else ""))
         return "SHADOW"
 
-    def block_hosts(self) -> str:
-        return self._suppress("block hosts")
+    def block_hosts(self, owner: str = "budget") -> str:
+        return self._suppress("block hosts", f"owner={owner}")
 
     def unblock_hosts(self, scope: str = "auto") -> str:
         return self._suppress("unblock hosts", f"scope={scope}")

@@ -112,6 +112,30 @@ class AdGuardClient:
         ids = state.get("ids")
         return self.cfg.service_id in ids if isinstance(ids, list) else False
 
+    def known_service_ids(self) -> set[str] | None:
+        """Every service id this AdGuard build understands, or None if unreachable.
+
+        Exists to refuse a silent no-op. `set_blocked` will happily add any string to the
+        blocked list and report success, so a service id the resolver has never heard of
+        blocks nothing while looking exactly like a block that worked -- the same failure
+        mode as an unarmed lane, which this project has already been bitten by twice.
+        """
+        status, body = self._call("/control/blocked_services/all")
+        if status != 200:
+            return None
+        try:
+            obj = json.loads(body)
+        except ValueError:
+            return None
+        services = obj.get("blocked_services") if isinstance(obj, dict) else None
+        if not isinstance(services, list):
+            return None
+        return {
+            str(service["id"])
+            for service in services
+            if isinstance(service, dict) and service.get("id")
+        }
+
     def set_blocked(self, blocked: bool) -> str:
         """Add or remove the YouTube service. Returns a short status for the log.
 
@@ -186,22 +210,110 @@ def load_client(root: Path) -> tuple["AdGuardClient | None", str]:
 # would hand back YouTube on the first reboot after the budget ran out.
 
 
-def read_block_date(path: Path) -> str | None:
-    """The local date the block was applied, or None if unknown."""
+# The marker also records WHO applied the block, because the resolver cannot tell a
+# parent's "no, now" from the budget running out -- `blocked_services` is a flat list of
+# ids with no provenance. Without this the two lanes fight: the nightly reset lifts a
+# parent's deliberate block as though it were yesterday's budget, and `toggle --allow`
+# either refuses to undo its own block or hands back time the budget already spent.
+BUDGET_OWNER = "budget"
+MANUAL_OWNER = "manual"
+
+
+def _read_marker(path: Path) -> dict:
     if not path.exists():
-        return None
+        return {}
     try:
         obj = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
-        return None
-    if not isinstance(obj, dict):
-        return None
-    value = obj.get("blocked_on")
-    return value if isinstance(value, str) and value else None
+        return {}
+    return obj if isinstance(obj, dict) else {}
 
 
-def write_block_date(path: Path, date: str | None) -> None:
-    """Record the date the block was applied, or clear it when lifting."""
+def _read_owner_dates(path: Path) -> dict[str, str]:
+    """Return every local owner and the date it acquired the resolver block.
+
+    New markers store a date per owner because the budget and a persistent parental
+    toggle may both need the same flat AdGuard service entry.  The old one-owner shape is
+    still accepted in place so an upgrade never forgets why an existing block is there.
+    Markers that predate owner tracking were written only by the budget watcher.
+    """
+    marker = _read_marker(path)
+    stored = marker.get("owners")
+    if isinstance(stored, dict):
+        return {
+            str(owner): date
+            for owner, date in stored.items()
+            if isinstance(owner, str) and owner
+            and isinstance(date, str) and date
+        }
+
+    date = marker.get("blocked_on")
+    if not isinstance(date, str) or not date:
+        return {}
+    owner = marker.get("owner")
+    if not isinstance(owner, str) or not owner:
+        owner = BUDGET_OWNER
+    return {owner: date}
+
+
+def read_block_date(path: Path, owner: str = BUDGET_OWNER) -> str | None:
+    """The local date ``owner`` acquired the block, or None if it never did."""
+    return _read_owner_dates(path).get(owner)
+
+
+def read_block_owners(path: Path) -> set[str]:
+    """Every local reason currently claiming the flat AdGuard service block."""
+    return set(_read_owner_dates(path))
+
+
+def read_block_owner(path: Path) -> str | None:
+    """Compatibility view of the resolver owners.
+
+    Callers making an ownership decision should use :func:`read_block_owners`.  This
+    singular view remains for older code and reports ``manual`` when both reasons exist,
+    which is the restrictive answer: an automatic reset must not lift a parent's hold.
+    """
+    owners = read_block_owners(path)
+    if MANUAL_OWNER in owners:
+        return MANUAL_OWNER
+    if BUDGET_OWNER in owners:
+        return BUDGET_OWNER
+    return sorted(owners)[0] if owners else None
+
+
+def _write_owner_dates(path: Path, owners: dict[str, str]) -> None:
     from .. import atomicio
 
-    atomicio.write_json(path, {"blocked_on": date} if date else {})
+    cleaned = {
+        owner: date
+        for owner, date in sorted(owners.items())
+        if isinstance(owner, str) and owner and isinstance(date, str) and date
+    }
+    atomicio.write_json(path, {"owners": cleaned} if cleaned else {})
+
+
+def add_block_owner(path: Path, date: str, owner: str) -> set[str]:
+    """Add one reason without overwriting another controller's active reason."""
+    owners = _read_owner_dates(path)
+    owners[owner] = date
+    _write_owner_dates(path, owners)
+    return set(owners)
+
+
+def remove_block_owner(path: Path, owner: str) -> set[str]:
+    """Release one reason and return the reasons that still require the block."""
+    owners = _read_owner_dates(path)
+    owners.pop(owner, None)
+    _write_owner_dates(path, owners)
+    return set(owners)
+
+
+def write_block_date(path: Path, date: str | None,
+                     owner: str = BUDGET_OWNER) -> None:
+    """Replace the marker with one owner, or clear every owner.
+
+    This preserves the original public helper's semantics for migrations and explicit
+    resets.  Normal enforcement uses :func:`add_block_owner` and
+    :func:`remove_block_owner`, since those must not erase the other controller's claim.
+    """
+    _write_owner_dates(path, {owner: date} if date else {})

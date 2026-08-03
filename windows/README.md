@@ -4,33 +4,34 @@ WSL can't elevate itself, so host changes run from an **elevated PowerShell** (R
 Start -> *Terminal (Admin)*). `Install-SafeHouse.ps1` stages one Python package and registers
 its current persistence task; there are no standalone DNS or task scripts.
 
-## 1. Point Windows DNS at Pi-hole (now)
-Run the current command once from an elevated PowerShell:
+## 1. Arm and verify the reboot-proof localhost relay
+Run this first from an elevated PowerShell:
 ```powershell
 cd C:\SafeHouse\windows\youtube-budget
-C:\SafeHouse\python\python.exe -m safehouse_setup dns
-```
-It auto-detects the active adapter, gateway, and current WSL address. It points the adapter at
-Pi-hole and installs a global Windows DNS Client NRPT rule so router-advertised IPv6 DNS cannot
-silently bypass Pi-hole. Chrome and Edge secure DNS are disabled by machine policy so those
-browsers stay on the enforced Windows resolver. If Pi-hole cannot answer, the script points both
-the adapter and NRPT rule at the detected gateway as an internet-preserving failsafe.
-
-## 2. Arm the reboot-proof logon task
-```powershell
 C:\SafeHouse\python\python.exe -m safehouse_setup persist
 ```
-This registers **`SafeHouse-DNS`** (runs at logon, highest privileges). On each login it wakes WSL,
-re-binds Pi-hole to the current WSL IP, and refreshes the adapter DNS plus NRPT enforcement.
+This registers and starts **`SafeHouse-DNS`** at logon (highest privileges), then waits until
+the DNS listener on `127.0.0.1` actually answers. The relay tracks WSL's changing NAT address
+without doing a blocking `wsl.exe` lookup in a DNS request. If WSL is temporarily unavailable,
+it forwards to the captured LAN gateway, preserving ordinary Internet access instead of making
+the Ethernet link appear disconnected.
+
+## 2. Point Windows DNS at the verified relay
+```powershell
+C:\SafeHouse\python\python.exe -m safehouse_setup dns
+```
+This reconciles the WSL containers, proves that a known blocked name reaches a sinkhole through
+the relay, and only then points IPv4 and IPv6 adapter DNS at loopback. If that proof fails, the
+adapter stays on the LAN gateway and the command exits `2`: Ethernet/DNS remain usable, but the
+banner correctly says that filtering—including YouTube—is not active.
 
 Verify / test:
 ```powershell
 Get-ScheduledTask -TaskName SafeHouse-DNS
 Start-ScheduledTask -TaskName SafeHouse-DNS                       # simulate a reboot
-Get-DnsClientNrptRule | Where-Object Comment -like 'SafeHouse:*' # should name the WSL IP
+Get-DnsClientServerAddress | Where-Object ServerAddresses         # active adapter -> loopback
 Resolve-DnsName doubleclick.net -Type A                           # should return 0.0.0.0
 Resolve-DnsName example.com -Type A                               # should return real addresses
-Get-Content $env:USERPROFILE\.pihole\set-dns.log -Tail 3
 ```
 Remove:
 ```powershell
@@ -57,22 +58,38 @@ ads return. Detail: [../docs/FIREWALL.md](../docs/FIREWALL.md).
 The crosvm VM reads DNS only at launch, so fully quit it (tray, Quit) and reopen so it picks up
 Pi-hole and drops cached ad IPs.
 
-## 5. Toggle the YouTube parental block (on demand)
-`safehouse_setup toggle` applies or removes a named parental block in the **live Windows hosts file**
-on demand. It is staged to `C:\SafeHouse\python -m safehouse_setup toggle` with its source host list at
-`C:\SafeHouse\windows\parental-blocks\youtube.txt`. **YouTube is allowed by default** — the block is
-only applied when you run it with `-Block`.
+## 5. Toggle a parental block (on demand)
+`safehouse_setup toggle` applies or removes a named parental block across **both enforcement
+lanes**. It is staged to `C:\SafeHouse\python -m safehouse_setup toggle` with its source host list
+at `C:\SafeHouse\windows\parental-blocks\youtube.txt`. **YouTube is allowed by default** — the
+block is only applied when you run it with `--block`.
 ```powershell
 C:\SafeHouse\python\python.exe -m safehouse_setup toggle youtube --block   # apply
 C:\SafeHouse\python\python.exe -m safehouse_setup toggle youtube --allow   # remove
 C:\SafeHouse\python\python.exe -m safehouse_setup toggle youtube           # status
 ```
-- **Self-elevates** via UAC for `-Block`/`-Allow` (status needs no elevation).
-- `-Block` appends a `# === Parental block: YouTube (toggled via safehouse_setup toggle) ===` … `# === end
-  YouTube block ===` section (one `0.0.0.0 <host>` line per host from `parental-blocks\youtube.txt`).
-  Idempotent — re-running does not duplicate it. `-Allow` removes that section. Both are byte-preserving:
-  the script splices only its own section and leaves every other line (and the file's mixed CRLF/LF
-  line endings) untouched.
+Every run reports both lanes, because they cover different things and fail independently:
+```
+YouTube:
+  hosts    (Windows applications)   BLOCKED:14
+  resolver (Play Games VM, phones)  BLOCKED
+```
+- **hosts lane** — the live Windows hosts file. Covers Windows applications that use the Windows
+  resolver. It appends a `# === Parental block: YouTube (manual) ===` … `# === end YouTube block ===`
+  section (one `0.0.0.0 <host>` line per host). Idempotent, and byte-preserving: it splices only
+  its own section and leaves every other line (and the file's CRLF/LF line endings) untouched.
+- **resolver lane** — AdGuard Home `blocked_services`. This is the one that covers the **Google
+  Play Games VM**, which runs its own resolver inside crosvm and cannot see the hosts file at all,
+  plus every phone and tablet on the network. A hosts-only block is one the child walks around by
+  opening Play Games.
+- **Exit codes:** `0` both lanes applied · `1` the host list is missing · `2` applied but the
+  resolver lane is not enforcing (disarmed, unreachable, or the service id is unknown to AdGuard).
+  A `2` is printed as a loud banner — it means coverage is incomplete, not that nothing happened.
+- A resolver block placed here is stamped **manual**, so the nightly reset
+  (`adguard_daily_reset.py`) holds it: a parent's "no, now" has no expiry. Conversely `--allow`
+  refuses to lift a block the **daily budget** owns, since that would hand back time already spent
+  — use `ctl grant <minutes>` for that.
+- **Self-elevates** via UAC for `--block`/`--allow` (status needs no elevation).
 - After a change it runs `ipconfig /flushdns`; **reload the browser/app** (hard refresh) to see it.
 - The markers are a stable, documented convention, so an external undo script can
   find and remove the same sections.
@@ -115,6 +132,6 @@ WSL host — `sudo systemctl disable --now safehouse-youtube-budget.service`. Fu
 [youtube-budget/README.md](youtube-budget/README.md).
 
 ## Notes
-- `safehouse_setup dns` contains no machine-specific interface, username, WSL path, or LAN gateway. It
-  discovers the active IPv4 default route at runtime.
+- `safehouse_setup dns` contains no machine-specific interface, username, WSL path, or LAN
+  resolver. `persist` captures the active adapter's DHCP resolver before SafeHouse changes it.
 - The task runs as the logged-on user with highest privileges (no UAC prompt at logon).
