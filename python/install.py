@@ -28,6 +28,7 @@ from safehouse_ytbudget import config as configmod  # noqa: E402
 
 LIVE_TASK = "SafeHouse-YouTubeBudget-Py"
 SHADOW_TASK = "SafeHouse-YouTubeBudget-PyShadow"
+ROBLOX_TASK = "SafeHouse-RobloxBudget"
 
 TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -57,6 +58,54 @@ TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
       <Interval>PT1M</Interval>
       <Count>999</Count>
     </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{python}</Command>
+      <Arguments>{arguments}</Arguments>
+      <WorkingDirectory>{workdir}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+# One-shot that must repeat forever, unlike the watcher's infinite loop above. A true
+# "on process start" trigger is not possible here: scheduled-task event filters speak an
+# XPath subset without substring matching, and Roblox's executable path changes on every
+# update (a versioned directory under the child's profile), so a 4688 filter cannot name
+# it. The one-minute repetition IS the launch detector: a launch while the budget is
+# spent survives at most a minute. RegistrationTrigger covers install day, BootTrigger
+# every day after; both repeat indefinitely (no Duration).
+GUARD_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>{description}</Description>
+    <URI>\\{name}</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <BootTrigger>
+      <Enabled>true</Enabled>
+      <Repetition><Interval>PT1M</Interval></Repetition>
+    </BootTrigger>
+    <RegistrationTrigger>
+      <Enabled>true</Enabled>
+      <Repetition><Interval>PT1M</Interval></Repetition>
+    </RegistrationTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <Hidden>true</Hidden>
+    <ExecutionTimeLimit>PT5M</ExecutionTimeLimit>
   </Settings>
   <Actions Context="Author">
     <Exec>
@@ -113,8 +162,8 @@ def add_av_exclusions(paths: list[Path]) -> None:
 
 
 def register_task(*, name: str, python: Path, arguments: str, workdir: Path,
-                  description: str, start: bool) -> bool:
-    xml = TASK_XML.format(
+                  description: str, start: bool, xml_template: str = TASK_XML) -> bool:
+    xml = xml_template.format(
         name=name, description=description, python=python,
         arguments=arguments, workdir=workdir,
     )
@@ -136,6 +185,23 @@ def register_task(*, name: str, python: Path, arguments: str, workdir: Path,
             tmp.unlink()
         except OSError:
             pass
+
+
+def register_roblox_guard(*, python: Path, workdir: Path) -> bool:
+    """The Roblox kill lane - deliberately independent of the YouTube watcher task.
+
+    It shares nothing at runtime with the watcher (own state, own log, no pktmon, no
+    hosts file), so disabling one must not disable the other. RegistrationTrigger
+    starts the repetition immediately; there is no /Run to issue.
+    """
+    return register_task(
+        name=ROBLOX_TASK, python=python,
+        arguments="-m safehouse_ytbudget.roblox_guard", workdir=workdir,
+        description=("SafeHouse Roblox budget - kills the game when the daily hour is "
+                     "spent (a joined session never re-resolves DNS, so only ending "
+                     "the process enforces mid-session)"),
+        start=False, xml_template=GUARD_TASK_XML,
+    )
 
 
 POWERSHELL_TASK = "SafeHouse-YouTubeBudget"
@@ -229,6 +295,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--keep-powershell-watcher", action="store_true",
                    help="do not remove the superseded PowerShell task; only useful if "
                         "you are deliberately running the old watcher")
+    p.add_argument("--roblox-guard-only", action="store_true",
+                   help="register only the Roblox kill-lane task; touches nothing else "
+                        "(no watcher, no config render, no task retirement)")
     args = p.parse_args(argv)
 
     if not is_admin():
@@ -239,9 +308,13 @@ def main(argv: list[str] | None = None) -> int:
         print("Fetch the embeddable distribution first - see windows/youtube-budget/README.md")
         return 1
 
-    retire_legacy_runtime()
-
     pkg_dir = Path(__file__).resolve().parent
+
+    if args.roblox_guard_only:
+        print(f"[*] Registering scheduled task {ROBLOX_TASK}...")
+        return 0 if register_roblox_guard(python=args.python, workdir=pkg_dir) else 1
+
+    retire_legacy_runtime()
 
     print(f"[*] Locking down {args.root}...")
     lock_down(args.root)
@@ -277,6 +350,10 @@ def main(argv: list[str] | None = None) -> int:
     if not register_task(name=name, python=args.python, arguments=arguments,
                          workdir=pkg_dir, description=description,
                          start=not args.no_start):
+        return 1
+
+    print(f"[*] Registering scheduled task {ROBLOX_TASK}...")
+    if not register_roblox_guard(python=args.python, workdir=pkg_dir):
         return 1
 
     print()
