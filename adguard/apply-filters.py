@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Reconcile a running AdGuard Home to the filter set in adguard/filters.json.
+"""Reconcile a running AdGuard Home to the filter set in adguard/filters.json and the
+user rules in adguard/user-rules.txt.
 
     python3 adguard/apply-filters.py                       # apply
     python3 adguard/apply-filters.py --dry-run             # show what would change
     python3 adguard/apply-filters.py --creds ~/adguard/.admin-password
 
 Idempotent: adds what is missing, enables what is present but disabled, and leaves
-everything else alone. It never REMOVES a list, because a parent may well have added one
-by hand and silently deleting it would be worse than leaving an extra.
+everything else alone. It never REMOVES a list or a rule, because a parent may well have
+added one by hand and silently deleting it would be worse than leaving an extra.
 
 Why this exists rather than "click it in the UI": the whole point of this repo is that
 the machine can be rebuilt from it. A filter set that lives only in the running container
@@ -30,7 +31,51 @@ from adguard_api import api
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_SPEC = HERE / "filters.json"
+DEFAULT_RULES = HERE / "user-rules.txt"
 DEFAULT_CREDS = Path.home() / "adguard" / ".admin-password"
+
+
+def wanted_rules(spec_path: Path) -> list[str]:
+    """The payload lines of user-rules.txt: everything after the first blank line.
+
+    The header above the blank line documents the file itself and must not end up in
+    the running instance; the payload keeps its comment lines so the rules stay
+    self-explaining in the AdGuard UI.
+    """
+    text = spec_path.read_text()
+    _, _, payload = text.partition("\n\n")
+    return [line for line in payload.splitlines() if line.strip()]
+
+
+def reconcile_rules(base: str, auth: str, spec_path: Path, dry_run: bool) -> None:
+    """Ensure every rule in user-rules.txt is present in AdGuard's user rules.
+
+    Merge, never replace: `set_rules` overwrites the whole list, so the new list is
+    the live one plus whatever the spec adds. Hand-added rules survive. A missing
+    comment line alone does not trigger a write -- only absent RULES do, and then the
+    spec's not-yet-present lines (comments included) are appended together.
+    """
+    status, body = api(base, auth, "/control/filtering/status")
+    if status != 200:
+        print(f"  !! cannot read user rules ({status}): {body[:160]}", file=sys.stderr)
+        return
+    live = json.loads(body).get("user_rules") or []
+    have = set(live)
+    spec = wanted_rules(spec_path)
+
+    missing_rules = [r for r in spec if not r.startswith("!") and r not in have]
+    if not missing_rules:
+        print("user rules already reconciled - every wanted rule is present.")
+        return
+
+    for r in missing_rules:
+        print(f"{'[dry-run] would add rule' if dry_run else 'adding rule'} {r}")
+    if dry_run:
+        return
+    merged = live + [line for line in spec if line not in have]
+    st, resp = api(base, auth, "/control/filtering/set_rules", {"rules": merged})
+    if st != 200:
+        print(f"  !! failed ({st}): {resp[:160]}", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -41,6 +86,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--creds", type=Path, default=DEFAULT_CREDS,
                    help="file containing the admin password")
     p.add_argument("--spec", type=Path, default=DEFAULT_SPEC)
+    p.add_argument("--rules", type=Path, default=DEFAULT_RULES,
+                   help="user rules the instance must contain (default: user-rules.txt)")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
 
@@ -89,6 +136,11 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dry_run and (to_add or to_enable):
         print("refreshing lists...")
         api(base, auth, "/control/filtering/refresh", {"whitelist": False}, timeout=300)
+
+    if args.rules.exists():
+        reconcile_rules(base, auth, args.rules, args.dry_run)
+    else:
+        print(f"!! user rules spec not found, skipping: {args.rules}", file=sys.stderr)
 
     status, body = api(base, auth, "/control/filtering/status")
     if status == 200:

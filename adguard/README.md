@@ -28,7 +28,8 @@ resolver — `*.googlevideo.com` — instead of chasing rotating IP addresses th
 | `.env.example` | Copy to `.env`. Bind IP, ports, timezone |
 | `filters.json` | **The filter set, with a written reason for each list.** Source of truth |
 | `bootstrap.py` | Configures a fresh instance end to end: wizard, upstream, parental settings, filters |
-| `apply-filters.py` | Reconciles a running instance to `filters.json` |
+| `user-rules.txt` | User rules the instance must contain (Roblox voice chat + ad-unit blocks). Source of truth |
+| `apply-filters.py` | Reconciles a running instance to `filters.json` and `user-rules.txt` |
 
 ## Setup
 

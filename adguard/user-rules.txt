@@ -1,0 +1,14 @@
+! AdGuard Home user rules SafeHouse guarantees are present, reconciled by
+! adguard/apply-filters.py alongside the filter lists. Same contract as the lists:
+! missing rules are added, rules added by hand in the UI are never removed.
+! Everything above the first blank line is this header and stays out of AdGuard;
+! everything below it is the payload, comments included, so the running instance
+! stays self-explaining.
+
+! SafeHouse: Roblox child-safety hardening (2026-08-16)
+! voice chat is 13+; block signaling so it cannot work even if enabled account-side
+||voice.roblox.com^
+! official Roblox ad units fetch config/serving from these; game traffic untouched
+||adconfiguration.roblox.com^
+||adserver.roblox.com^
+||ads.roblox.com^

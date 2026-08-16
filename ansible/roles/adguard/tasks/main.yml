@@ -24,6 +24,7 @@
     - "{{ repo_dir }}/adguard/apply-filters.py"
     - "{{ repo_dir }}/adguard/adguard_api.py"
     - "{{ repo_dir }}/adguard/filters.json"
+    - "{{ repo_dir }}/adguard/user-rules.txt"
 
 - name: Render .env
   ansible.builtin.template:
