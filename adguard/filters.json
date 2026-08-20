@@ -41,23 +41,35 @@
       "name": "Peter Lowe's Blocklist",
       "url": "https://adguardteam.github.io/HostlistsRegistry/assets/filter_3.txt",
       "why": "Small, old, very low false-positive rate. Cheap insurance."
-    },
+    }
+  ],
+  "_deliberately_not_enabled_comment": [
+    "apply-filters.py reads only 'filters', so anything parked here stays off. It lives",
+    "in this file rather than nowhere because a list that is merely absent gets re-added",
+    "by the next person who thinks it looks useful; a list with a recorded reason does",
+    "not. These two were enabled by mistake on 2026-08-19 and turned back off the same",
+    "day at the parent's call - see the 'why' on each."
+  ],
+  "deliberately_not_enabled": [
     {
       "name": "HaGeZi's Encrypted DNS/VPN/TOR/Proxy Bypass",
       "url": "https://adguardteam.github.io/HostlistsRegistry/assets/filter_52.txt",
-      "why": "Closes the hole that made the DNS layer decorative in the first place - Avast Secure DNS and Opera GX's VPN both resolved around it. Blocks known DoH/VPN/proxy endpoints, so a browser that ships its own resolver cannot reach it."
+      "why": "OFF at the parent's decision, 2026-08-19. It does close a real hole - a browser with its own DoH resolver ignores this whole stack, which is how Avast Secure DNS and Opera GX's VPN got around it before - but it blocks dns.google, cloudflare-dns.com and the rest, and any device on this network that is configured to use DoH loses name resolution entirely rather than degrading. On a family network that reads as 'the internet is broken'. Re-enable only together with checking no phone or TV here is set to a Private DNS / secure-DNS provider.",
+      "tradeoff": "While this is off, the YouTube block is bypassable by any browser that ships its own DoH. The Windows machine-policy lane (safehouse_setup/browser.py sets DnsOverHttpsMode=off) is what covers that gap on the PC; nothing covers it on a phone or tablet."
     },
     {
       "name": "HaGeZi's Threat Intelligence Feeds",
       "url": "https://adguardteam.github.io/HostlistsRegistry/assets/filter_44.txt",
-      "why": "Malware, phishing, scam. Child protection rather than ad blocking, and in-game ads are a common delivery route for exactly this."
+      "why": "OFF at the parent's decision, 2026-08-19. Two million rules of malware/phishing/scam blocking, and the same over-blocking objection as Pro++/Ultimate above applies at ten times the size: the failure mode is a game or a site that simply will not load, with no obvious cause and nothing in the UI pointing at this list."
     }
   ],
   "known_false_positives": [
     {
       "host": "firebaseinstallations.googleapis.com",
-      "blocked_by": "Pi-hole (pre-existing, not these lists)",
-      "impact": "Firebase app-instance registration. Games have worked with it blocked, so it is left alone - but whitelist it here first if a game starts failing to launch or sign in."
+      "blocked_by": "the GoodbyeAds adlist, via Pi-hole - not by any list in this file",
+      "status": "ALLOWED since 2026-08-19, in both lanes",
+      "impact": "Firebase app-instance registration: the identity call an Android app makes at startup. Blocking it removes no advertising at all, and its failure mode is a game that will not launch or will not sign in - so once the standing policy became 'the games must keep working' there was nothing left arguing for the block.",
+      "how": "Allowed in BOTH resolvers, because either one alone still answers 0.0.0.0: '@@||firebaseinstallations.googleapis.com^' in adguard/user-rules.txt, and the same host in blocklists/allowlist.txt which scripts/load-blocklists.sh loads into Pi-hole as an exact allow (type 0)."
     }
   ]
 }

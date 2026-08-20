@@ -108,12 +108,18 @@ def main(argv=None) -> int:
         print(f"!! could not set upstream ({st}): {body[:200]}", file=sys.stderr)
 
     # --- 3. parental settings ------------------------------------------------
-    print("[*] parental control + SafeSearch")
+    print("[*] parental control + SafeSearch + Safe Browsing")
     api(base, auth, "/control/parental/enable", {})
     api(base, auth, "/control/safesearch/settings", {
         "enabled": True, "bing": True, "duckduckgo": True, "ecosia": True,
         "google": True, "pixabay": True, "yandex": True, "youtube": True,
     }, method="PUT")
+    # Malware/phishing, as a category lookup rather than a downloaded list. Enabled
+    # 2026-08-19; it was off on the live instance and nothing here would have turned it
+    # back on, so a rebuild was silently dropping it. Deliberately chosen INSTEAD of
+    # HaGeZi's Threat Intelligence Feeds, which covers similar ground in two million
+    # rules - see the reason parked next to that list in filters.json.
+    api(base, auth, "/control/safebrowsing/enable", {})
 
     # --- 4. filter lists -----------------------------------------------------
     if args.skip_filters:

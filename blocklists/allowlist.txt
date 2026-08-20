@@ -1,0 +1,23 @@
+# Exact allowlist — domains a blocklist gets WRONG, one per line.
+#
+# Loaded into Pi-hole's domainlist as type 0 (exact allow) with the comment
+# 'SafeHouse-Allow' by ../scripts/load-blocklists.sh. An allow entry beats gravity, so
+# this is the lever for a false positive that would otherwise need a whole list disabled.
+#
+# This file exists because an allowlist kept only in the running container is lost the
+# moment the volume is recreated — and its absence is invisible in exactly the way that
+# matters: the game stops signing in weeks later and nothing connects the two. Same
+# reasoning as adguard/filters.json being the source of truth for the lists themselves.
+#
+# Keep it SHORT and keep the reason on every line. An allowlist is a hole in the filter;
+# an entry nobody can justify is an entry that should be removed.
+#
+# NOTE the layering: AdGuard Home is the resolver on :53 with Pi-hole behind it on :5353,
+# so a domain has to be allowed in BOTH or the block simply moves upstream. AdGuard's half
+# is the matching `@@||domain^` rule in ../adguard/user-rules.txt. Add to both, always.
+
+# Firebase Installations. NOT an ad domain - it is the app-identity service Android apps
+# call at startup to register an instance, and blocking it makes a game fail to launch or
+# fail to sign in rather than making it ad-free. Blocked by the GoodbyeAds list. Allowed
+# 2026-08-19 on the parent's call, once the standing policy became "the games must work".
+firebaseinstallations.googleapis.com

@@ -3,11 +3,26 @@
 # Ads, tracking, malware. These are general-purpose lists. The in-app / mobile ad SDK
 # coverage that matters for Google Play Games is applied at AdGuard Home instead —
 # see ../adguard/filters.json.
+#
+# HaGeZi's `hosts/` directory was retired upstream; those URLs now 404. Discovered
+# 2026-08-19, by which point `hosts/pro.txt` and `hosts/pro.plus.txt` had been serving
+# Pi-hole's THREE-WEEK-OLD CACHED COPIES — `pihole -g` logs "using previously cached
+# list" and exits 0, so a dead list looks exactly like a healthy one and nothing in the
+# dashboard says otherwise. Check the URLs, not just the run's exit code:
+#
+#     docker exec pihole pihole-FTL sqlite3 /etc/pihole/gravity.db \
+#       "select address from adlist where enabled=1;" | xargs -I{} \
+#       curl -s -o /dev/null -w '%{http_code} {}\n' -L {}
+#
+# The `adblock/` variants are the live equivalents. They are ABP syntax (`||domain^`),
+# which Pi-hole v6 parses natively and which covers subdomains per line, so the raw
+# domain COUNT drops while coverage does not — do not read the smaller number as a
+# regression.
 
 https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
-https://raw.githubusercontent.com/hagezi/dns-blocklists/main/hosts/pro.txt
+https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt
 https://big.oisd.nl
-https://raw.githubusercontent.com/hagezi/dns-blocklists/main/hosts/pro.plus.txt
+https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.plus.txt
 https://raw.githubusercontent.com/jerryn70/GoodbyeAds/master/Hosts/GoodbyeAds.txt
 https://adaway.org/hosts.txt
 
