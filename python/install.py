@@ -29,6 +29,7 @@ from safehouse_ytbudget import config as configmod  # noqa: E402
 LIVE_TASK = "SafeHouse-YouTubeBudget-Py"
 SHADOW_TASK = "SafeHouse-YouTubeBudget-PyShadow"
 ROBLOX_TASK = "SafeHouse-RobloxBudget"
+BROWSER_TASK = "SafeHouse-BrowserGuard"
 
 TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -70,13 +71,20 @@ TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
 """
 
 
-# One-shot that must repeat forever, unlike the watcher's infinite loop above. A true
-# "on process start" trigger is not possible here: scheduled-task event filters speak an
-# XPath subset without substring matching, and Roblox's executable path changes on every
-# update (a versioned directory under the child's profile), so a 4688 filter cannot name
-# it. The one-minute repetition IS the launch detector: a launch while the budget is
-# spent survives at most a minute. RegistrationTrigger covers install day, BootTrigger
-# every day after; both repeat indefinitely (no Duration).
+# One-shot that must repeat forever, unlike the watcher's infinite loop above. Both kill
+# lanes (Roblox and the browser) use this shape. A true "on process start" trigger is not
+# possible here: scheduled-task event filters speak an XPath subset without substring
+# matching, and Roblox's executable path changes on every update (a versioned directory
+# under the child's profile), so a 4688 filter cannot name it. The one-minute repetition
+# IS the launch detector: a launch while the budget is spent survives at most a minute.
+# RegistrationTrigger covers install day, BootTrigger every day after; both repeat
+# indefinitely (no Duration).
+#
+# ExecutionTimeLimit PT5M is the ceiling on a single run. A run that finds nothing takes
+# one `tasklist`; a run that finds something sleeps a random 1-5 seconds before killing
+# it, so the limit is ~60x the worst case and exists only to reap a wedged run. It is
+# also why the guards clamp their configurable pause far below it: a pause the scheduler
+# terminates is a browser that survives.
 GUARD_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -204,6 +212,40 @@ def register_roblox_guard(*, python: Path, workdir: Path) -> bool:
     )
 
 
+def register_browser_guard(*, python: Path, workdir: Path) -> bool:
+    """The no-browsing kill lane - the same repeating one-shot as the Roblox lane.
+
+    It was a resident loop first, so the gap between a browser opening and closing could
+    be shorter than a scheduled task's finest repetition. The parent chose the cheap
+    shape instead: a run that finds no browser does nothing at all, so a task that fires
+    every minute of every day costs one `tasklist` a minute on an idle machine, against a
+    process that would otherwise be up all day. The price is up to a minute of latency
+    before a launch is noticed. Hence GUARD_TASK_XML, and no /Run - the
+    RegistrationTrigger starts the repetition immediately.
+    """
+    return register_task(
+        name=BROWSER_TASK, python=python,
+        arguments="-m safehouse_ytbudget.browser_guard", workdir=workdir,
+        description=("SafeHouse browser guard - closes any web browser within about a "
+                     "minute of it opening (no browsing on this PC; games are untouched)"),
+        start=False, xml_template=GUARD_TASK_XML,
+    )
+
+
+def seed_json(path: Path, payload: dict) -> str:
+    """Write `payload` only when `path` is absent.
+
+    Never overwrite: these files are the parent's authoring surface, and re-running the
+    installer must not silently revert an edit - the same reasoning that makes
+    `config.render` layer the live config underneath `.env`.
+    """
+    if path.exists():
+        return f"kept existing {path.name}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return f"seeded {path.name} with {json.dumps(payload)}"
+
+
 POWERSHELL_TASK = "SafeHouse-YouTubeBudget"
 
 
@@ -298,6 +340,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--roblox-guard-only", action="store_true",
                    help="register only the Roblox kill-lane task; touches nothing else "
                         "(no watcher, no config render, no task retirement)")
+    p.add_argument("--browser-guard-only", action="store_true",
+                   help="register only the browser kill-lane task; touches nothing else "
+                        "(no watcher, no config render, no task retirement)")
     args = p.parse_args(argv)
 
     if not is_admin():
@@ -314,10 +359,38 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[*] Registering scheduled task {ROBLOX_TASK}...")
         return 0 if register_roblox_guard(python=args.python, workdir=pkg_dir) else 1
 
+    if args.browser_guard_only:
+        print(f"[*] Registering scheduled task {BROWSER_TASK}...")
+        return 0 if register_browser_guard(python=args.python, workdir=pkg_dir) else 1
+
     retire_legacy_runtime()
 
     print(f"[*] Locking down {args.root}...")
+    # The ACL is set on the whole root, so every file the guards own -- including the two
+    # seeded below and their logs -- is covered without naming them here.
     lock_down(args.root)
+
+    print("[*] Seeding the guard configs (existing files are never overwritten)...")
+    # 0 minutes is the standing policy, not a placeholder: no Roblox unless a parent
+    # raises it. Seeding it explicitly means the file exists to be edited, rather than a
+    # parent having to know the name of a file that is not there.
+    # delay_*_sec is the pause between seeing a program and ending it, on both lanes.
+    # Both tasks fire once a minute, so the pause is a small part of the latency; its job
+    # is that the exact moment cannot be timed, and that anything closed DURING it counts
+    # as the child's own doing rather than a kill.
+    print("    " + seed_json(args.root / "roblox-budget.json", {
+        "limit_min": 0,
+        "delay_min_sec": 1,
+        "delay_max_sec": 5,
+    }))
+    print("    " + seed_json(args.root / "browser-guard.json", {
+        "enabled": True,
+        "delay_min_sec": 1,
+        "delay_max_sec": 5,
+        "users": [],
+        "message": ("Browsing is off on this PC. Games still work - "
+                    "ask a grown-up if you need a web page."),
+    }))
 
     print("[*] Rendering config.json from .env...")
     cfg, warnings = configmod.render(args.root / "config.json", pkg_dir / ".env")
@@ -354,6 +427,10 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"[*] Registering scheduled task {ROBLOX_TASK}...")
     if not register_roblox_guard(python=args.python, workdir=pkg_dir):
+        return 1
+
+    print(f"[*] Registering scheduled task {BROWSER_TASK}...")
+    if not register_browser_guard(python=args.python, workdir=pkg_dir):
         return 1
 
     print()

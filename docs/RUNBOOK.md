@@ -106,6 +106,140 @@ day — correct even if the PC was off at midnight or off for days. Full detail 
 - **Migration from the old WSL daemon:** arm the Windows task above, then retire the daemon
   on the WSL host: `sudo systemctl disable --now safehouse-youtube-budget.service`.
 
+## YouTube Shorts (browser layer)
+
+Shorts share every domain with the rest of YouTube — only the URL path and page layout
+differ, so no resolver can separate them. Two browser-level lanes, both written by
+`python -m safehouse_setup browser` (machine policy, HKLM, out of reach of browser
+settings):
+
+- **Navigation is blocked**: `URLBlocklist = youtube.com/shorts` in Edge, Opera GX
+  (the unspaced `OperaSoftware` key — see `safehouse_setup/browser.py` for the trap)
+  and Chrome. Any `/shorts/` URL lands on the blocked-by-administrator page.
+- **Shorts are hidden**: uBlock Origin is force-installed with
+  `blocklists/youtube-shorts.txt` pre-subscribed via managed `toOverwrite.filterLists`
+  (defaults restated — "overwrite" means overwrite). The list hides the Shorts shelf,
+  sidebar entries, thumbnails and channel tabs. It is fetched from this repo's `main`
+  branch on GitHub, so **it only serves after the branch carrying it is merged and
+  pushed**; until then uBO shows a fetch error for that one list and everything else
+  works.
+- **Verify:** restart the browser twice (once to load policy, once for the forced
+  install), then open `edge://policy` / `opera://policy` and look for `URLBlocklist`;
+  navigate to `youtube.com/shorts` → blocked page; open YouTube home → no Shorts
+  shelf. Opera's forced install from the Chrome Web Store is best-effort — if uBO does
+  not appear there, install it once by hand and import the raw list URL.
+
+## The two process-kill lanes (no browsing, and the Roblox budget)
+
+Some things cannot be enforced at the resolver. A joined Roblox session holds a raw UDP
+connection to `128.116.0.0/17` and never resolves a name again, so DNS only stops *new*
+joins; and "no web browsing" is an infinite list of sites, when the thing being ruled out
+is the browser itself. Both are enforced by ending the process instead:
+
+| Task | Module | Config | State + log |
+|---|---|---|---|
+| `SafeHouse-RobloxBudget` | `safehouse_ytbudget.roblox_guard` | `roblox-budget.json` | `roblox-budget.state.json`, `roblox-budget.log` |
+| `SafeHouse-BrowserGuard` | `safehouse_ytbudget.browser_guard` | `browser-guard.json` | `browser-guard.state.json`, `browser-guard.log` |
+
+Everything lives under `C:\ProgramData\SafeHouse` (ACL: SYSTEM + Administrators full,
+**Users read-only** — the child may read how much time is left, not edit it).
+
+**Shape — both lanes are the same one-shot.** A SYSTEM task fires at boot and on
+registration and repeats every `PT1M`, `ExecutionTimeLimit PT5M`, `IgnoreNew`. Each run
+takes **one** `tasklist /FO CSV /NH` dump, acts, and exits. Neither is a resident loop;
+the browser lane used to be one and was converted, because:
+
+- **a run that finds nothing running does nothing at all** — no log line, no state write,
+  no notification, no second subprocess. On an ordinary day, when nobody browses and
+  nobody plays, each lane costs one `tasklist` a minute and nothing else.
+- the price is latency, and it is stated plainly below rather than hidden.
+
+**Timing, honestly.** Up to ~60s passes before a launch (or an expiry) is noticed — that
+is the finest repetition a scheduled task offers. The run then waits a random **1–5s**,
+re-observes, and ends only what is *still* up. That pause is a small part of the total; it
+is not what makes the enforcement gentle. Its job is that the exact moment is
+unpredictable, that a window closing a beat later reads as a rule rather than a crash, and
+that a child who closes the window himself during the pause is not reported as a kill.
+
+**Tune** (both files are seeded by `install.py` and **never overwritten** on re-run):
+- `roblox-budget.json` — `limit_min` (**0** = the standing policy, and the strict
+  fallback: absent or broken means 0, never unlimited), `delay_min_sec`, `delay_max_sec`.
+- `browser-guard.json` — `enabled`, `delay_min_sec`, `delay_max_sec`, `users` (empty =
+  every user; a typo here fails *open* to all users rather than silently enforcing
+  nothing), `message`. Every defect falls back to **enforcing** with the defaults.
+- Delays are clamped to 60s: the task's `ExecutionTimeLimit` is PT5M, and a pause the
+  scheduler terminates mid-run is a browser that survives.
+- A today-only Roblox grant is `bonus_sec` in the *state* file; it dies with the date
+  rollover instead of quietly becoming the new limit.
+- Because the installer never overwrites, a `browser-guard.json` written before the lane
+  became a one-shot keeps its old values: `poll_sec` is now **ignored** (there is no loop
+  to pace) and a `delay_min_sec`/`delay_max_sec` of 5–60 is still honoured. Edit those two
+  down to 1–5 by hand and drop `poll_sec` if you want the current defaults.
+
+**Parent CLI** (browser lane; mutating verbs need elevation, `--status` is read-only):
+```powershell
+cd C:\SafeHouse\windows\youtube-budget
+$py = 'C:\SafeHouse\python\python.exe'
+& $py -m safehouse_ytbudget.browser_guard --status         # enforcing? unlock left?
+& $py -m safehouse_ytbudget.browser_guard --unlock 30      # suspend for 30 min
+& $py -m safehouse_ytbudget.browser_guard --lock           # cancel the unlock now
+& $py -m safehouse_ytbudget.browser_guard --dry-run        # one run: observe + log only
+& $py -m safehouse_ytbudget.roblox_guard  --dry-run        # ditto for Roblox
+```
+
+**Arm** (elevated; each flag touches nothing else):
+```powershell
+cd C:\SafeHouse\windows\youtube-budget
+C:\SafeHouse\python\python.exe .\install.py --roblox-guard-only
+C:\SafeHouse\python\python.exe .\install.py --browser-guard-only
+```
+Both are also registered by a full `install.py` run. Neither needs `/Run` — the
+`RegistrationTrigger` starts the repetition immediately. Re-running is how you *change
+the task's shape*: `schtasks /Create /F` overwrites the registration, so if a task is
+being converted from an older shape, `schtasks /End /TN <name>` first to stop whatever is
+still running under the old one.
+
+**Prerequisite for the browser lane:** run `python -m safehouse_setup browser` first. Edge
+Startup Boost and Chrome/Edge background mode keep a browser process resident with no
+window at all; without those policies off, "a browser is running" says nothing about what
+the child did, and the guard spends the day fighting Windows. It detects that fight —
+12 closes of the same image within 30 minutes logs `[error] … Windows is restarting it,
+not the child` and mutes the on-screen message until it settles — rather than assuming it
+away.
+
+**Before arming, add the AV exclusion.** Avast quarantined the earlier watcher on this
+machine, script and scheduled task both, and enforcement then dies **silently**. The
+installer adds a Microsoft Defender exclusion; third-party AV needs its own, added by hand
+in that product, *before* the task is registered.
+
+**Verify** — each lane, both directions:
+```powershell
+schtasks /Query /TN SafeHouse-RobloxBudget /V /FO LIST   # Ready, last run within a minute
+schtasks /Query /TN SafeHouse-BrowserGuard /V /FO LIST
+```
+- *It enforces:* open Edge → within about a minute plus a few seconds the window closes
+  and a message appears; `browser-guard.log` shows `[wait]` then `[kill]`. For Roblox, set
+  `{"limit_min": 1}`, launch it, and the game must die within about a minute (then remove
+  the override).
+- *It does not over-reach:* with Steam, Epic, Roblox and Windows Widgets running and no
+  browser open, nothing is closed and nothing is logged. `msedgewebview2.exe`,
+  `steamwebhelper.exe` and `RobloxPlayerBeta.exe` are Chromium in someone else's clothes
+  and must survive every sweep — killing them breaks the games, which is how a guard gets
+  turned off for good.
+- *It is quiet when idle:* with nothing running, neither log may grow and neither state
+  file's timestamp may move, however many times the tasks fire. A log line per minute is a
+  regression, not cosmetics.
+
+**Honest limits.** child has local admin by choice, so he can stop or delete either task.
+These lanes make that a visible, deliberate act; they do not make it impossible. Also, a
+kill is image-wide: if a parent is browsing in the same browser in their own session at
+that moment, their window goes too — set `users` if that matters.
+
+**Disarm:** `Stop-ScheduledTask -TaskName SafeHouse-BrowserGuard` (pause the current run)
+or `Unregister-ScheduledTask -TaskName SafeHouse-BrowserGuard -Confirm:$false` (remove),
+same for `SafeHouse-RobloxBudget`. A temporary parent override is `--unlock N` instead, so
+it expires by itself.
+
 ## Blocklists auto-update (weekly)
 `scripts/auto-update.sh` re-applies the repo blocklists and rebuilds gravity so every adlist's
 contents (ads + NSFW) re-download. A weekly schedule (default **Sunday 04:00 local**) is installed
