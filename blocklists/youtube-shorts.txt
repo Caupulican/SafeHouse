@@ -1,0 +1,37 @@
+! Title: SafeHouse - hide YouTube Shorts
+! Description: Removes Shorts everywhere in the YouTube web UI - the shelf on Home and
+!   Search, the sidebar entries, Short thumbnails in feeds, and channel Shorts tabs -
+!   and hard-blocks navigating to a /shorts/ URL. Subscribed by uBlock Origin via the
+!   browser policy safehouse_setup/browser.py writes (Edge, forced) or a one-time
+!   manual import (Opera GX).
+! Homepage: https://github.com/Caupulican/SafeHouse
+! Expires: 1 day
+!
+! Why this exists at the browser and not in DNS: Shorts share every domain with the
+! rest of YouTube - the difference is only the URL path and the page layout, which a
+! resolver never sees.
+
+! --- navigation: a /shorts/ URL is a dead end, not just hidden -----------------
+||youtube.com/shorts^$document
+
+! --- desktop (www.youtube.com) -------------------------------------------------
+! the Shorts shelf on Home, Search and Subscriptions
+youtube.com##ytd-reel-shelf-renderer
+youtube.com##ytd-rich-shelf-renderer[is-shorts]
+youtube.com##ytd-rich-section-renderer:has(ytd-rich-shelf-renderer[is-shorts])
+! the Shorts entry in both sidebar states ("Shorts" is the brand name in pt-BR too)
+youtube.com##ytd-guide-entry-renderer:has(a[title="Shorts"])
+youtube.com##ytd-mini-guide-entry-renderer[aria-label="Shorts"]
+! individual Short thumbnails wherever they appear in feeds and results
+youtube.com##ytd-rich-item-renderer:has(a[href^="/shorts/"])
+youtube.com##ytd-video-renderer:has(a[href^="/shorts/"])
+youtube.com##ytd-grid-video-renderer:has(a[href^="/shorts/"])
+youtube.com##ytd-compact-video-renderer:has(a[href^="/shorts/"])
+! the Shorts tab on channel pages
+youtube.com##yt-tab-shape[tab-title="Shorts"]
+
+! --- mobile web (m.youtube.com) ------------------------------------------------
+m.youtube.com##ytm-reel-shelf-renderer
+m.youtube.com##ytm-rich-section-renderer:has(ytm-reel-shelf-renderer)
+m.youtube.com##ytm-pivot-bar-item-renderer:has(div.pivot-shorts)
+m.youtube.com##ytm-video-with-context-renderer:has(a[href^="/shorts/"])

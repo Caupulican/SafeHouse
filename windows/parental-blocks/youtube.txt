@@ -3,8 +3,13 @@
 # Canonical hostname list for the "YouTube" parental block toggle.
 # This is the SOURCE OF TRUTH for `safehouse_setup toggle youtube --block`,
 # which appends a `0.0.0.0 <host>` line for each entry below to the live Windows
-# hosts file (and `-Allow` removes that section again). YouTube is ALLOWED unless
-# the block is explicitly toggled on; the script never applies it automatically.
+# hosts file (and `-Allow` removes that section again).
+#
+# STANDING POLICY since 2026-08-19: YouTube is BLOCKED. The authoritative lane is the
+# resolver (adguard/user-rules.txt), because it also covers the Google Play Games VM
+# and every phone on the network; this hosts list is the Windows-only half and still
+# has to be applied by running the toggle -- the script never applies it on its own.
+# `--allow` lifts it, and is a deliberate parental exception, not the default state.
 #
 # Format: one hostname per line. Blank lines and lines starting with '#' are ignored.
 # To block more YouTube surfaces, add hostnames here, then re-run the toggle.
