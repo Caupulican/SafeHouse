@@ -22,7 +22,7 @@ whose job is running games.
 
 Each run:
 
-    observe -> pause 1-5s -> observe again -> kill what is still up -> tell him
+    observe -> pause 1-5s -> observe again -> kill what is still up
 
 Two properties are load-bearing and have tests holding them down:
 
@@ -142,6 +142,11 @@ class GuardConfig:
     # because a mistyped name fails OPEN, and silently enforcing nothing is worse than
     # occasionally being too broad.
     users: tuple[str, ...] = ()
+    # Whether to put a message on screen when a browser is ended. OFF by design, at the
+    # parent's instruction: the child is not to be told that something is enforcing this.
+    # He still sees the window close, so this buys silence about the CAUSE, not secrecy
+    # about the effect - worth knowing when deciding what to say to him directly.
+    notify: bool = False
     message: str = DEFAULT_MESSAGE
 
 
@@ -270,13 +275,18 @@ def load_config(path: Path) -> tuple[GuardConfig, list[str]]:
         raw_users = []
     users = tuple(u.strip() for u in raw_users if u.strip())
 
+    notify = obj.get("notify", GuardConfig.notify)
+    if not isinstance(notify, bool):
+        warnings.append(f"notify must be true or false (got {notify!r}), staying silent")
+        notify = False
+
     message = obj.get("message", DEFAULT_MESSAGE)
     if not isinstance(message, str) or not message.strip():
         warnings.append("message must be a non-empty string, using the default")
         message = DEFAULT_MESSAGE
 
     return GuardConfig(enabled=enabled, delay_min_sec=low, delay_max_sec=high,
-                       users=users, message=message), warnings
+                       users=users, notify=notify, message=message), warnings
 
 
 # --- state -------------------------------------------------------------------
@@ -372,12 +382,15 @@ def kill_processes(names: tuple[str, ...], runner=_run) -> list[str]:
 
 
 def notify(message: str, runner=_run) -> None:
-    """Tell the child what happened, best effort.
+    """Put a message on screen, best effort. Only called when `notify` is enabled.
 
-    A window vanishing with no explanation is confusing at eight, and confusion is what
-    turns a rule into a bug report. `msg.exe` does not exist on Windows Home, so this is
-    allowed to fail entirely and say nothing - same contract as `log`: telling him must
-    never take the guard down.
+    It ships DISABLED. The argument for telling him was that a window vanishing with no
+    explanation is confusing at eight; the parent's decision is that he is not to know a
+    control is doing it, and that is theirs to make. The code stays because the switch is
+    meant to be flippable, not because anything currently calls it.
+
+    `msg.exe` does not exist on Windows Home, so this is allowed to fail entirely and say
+    nothing - same contract as `log`: a message must never take the guard down.
     """
     try:
         runner(["msg.exe", "*", "/TIME:10", message])
@@ -437,6 +450,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  Fires      : every minute (scheduled task), then waits "
               f"{cfg.delay_min_sec}-{cfg.delay_max_sec}s before ending anything")
         print(f"  Users      : {', '.join(cfg.users) if cfg.users else 'all'}")
+        print(f"  On screen  : {'shows a message' if cfg.notify else 'nothing - closes silently'}")
         print(f"  Unlock     : {f'{left // 60}m{left % 60:02d}s left' if left else 'none'}")
         print(f"  Recent     : {recent} close(s) in the last "
               f"{STORM_WINDOW_SEC // 60} minutes")
@@ -488,14 +502,13 @@ def main(argv: list[str] | None = None) -> int:
                 f"[error] {decision.storm} has been closed {STORM_KILLS}+ times in "
                 f"{STORM_WINDOW_SEC // 60} minutes - Windows is restarting it, not the "
                 f"child. Run `python -m safehouse_setup browser` to turn off Edge Startup "
-                f"Boost and background mode, then re-run this task. Suppressing the "
-                f"on-screen message until it settles.")
+                f"Boost and background mode, then re-run this task.")
         if decision.kill:
             log(log_path, f"{prefix}[kill] ending {', '.join(decision.kill)}")
             if not args.dry_run:
                 for failure in kill_processes(decision.kill):
                     log(log_path, f"[error] taskkill failed: {failure}")
-                if decision.notify:
+                if decision.notify and cfg.notify:
                     notify(cfg.message)
 
         # Only on a real change: the kill history and the unlock are the only things that

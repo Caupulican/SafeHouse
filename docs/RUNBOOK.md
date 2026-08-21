@@ -166,7 +166,11 @@ that a child who closes the window himself during the pause is not reported as a
   fallback: absent or broken means 0, never unlimited), `delay_min_sec`, `delay_max_sec`.
 - `browser-guard.json` — `enabled`, `delay_min_sec`, `delay_max_sec`, `users` (empty =
   every user; a typo here fails *open* to all users rather than silently enforcing
-  nothing), `message`. Every defect falls back to **enforcing** with the defaults.
+  nothing), `notify`, `message`. Every defect falls back to **enforcing** with the
+  defaults. **`notify` is `false`** — the browser closes with nothing on screen, by
+  the parent's instruction that the child is not to know a control is doing it. He
+  still sees the window go, so this hides the cause, not the effect. Set it to `true`
+  to show `message` instead.
 - Delays are clamped to 60s: the task's `ExecutionTimeLimit` is PT5M, and a pause the
   scheduler terminates mid-run is a browser that survives.
 - A today-only Roblox grant is `bonus_sec` in the *state* file; it dies with the date
@@ -204,7 +208,7 @@ Startup Boost and Chrome/Edge background mode keep a browser process resident wi
 window at all; without those policies off, "a browser is running" says nothing about what
 the child did, and the guard spends the day fighting Windows. It detects that fight —
 12 closes of the same image within 30 minutes logs `[error] … Windows is restarting it,
-not the child` and mutes the on-screen message until it settles — rather than assuming it
+not the child` — rather than assuming it
 away.
 
 **Before arming, add the AV exclusion.** Avast quarantined the earlier watcher on this
@@ -218,7 +222,8 @@ schtasks /Query /TN SafeHouse-RobloxBudget /V /FO LIST   # Ready, last run withi
 schtasks /Query /TN SafeHouse-BrowserGuard /V /FO LIST
 ```
 - *It enforces:* open Edge → within about a minute plus a few seconds the window closes
-  and a message appears; `browser-guard.log` shows `[wait]` then `[kill]`. For Roblox, set
+  with nothing shown on screen; `browser-guard.log` shows `[wait]` then `[kill]` — the
+  log is the only place a close is recorded now. For Roblox, set
   `{"limit_min": 1}`, launch it, and the game must die within about a minute (then remove
   the override).
 - *It does not over-reach:* with Steam, Epic, Roblox and Windows Widgets running and no

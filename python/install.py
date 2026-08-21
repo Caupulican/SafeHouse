@@ -388,6 +388,9 @@ def main(argv: list[str] | None = None) -> int:
         "delay_min_sec": 1,
         "delay_max_sec": 5,
         "users": [],
+        # Off at the parent's instruction: the child is not to be told a control is
+        # closing the browser. Flip to true to put `message` on screen instead.
+        "notify": False,
         "message": ("Browsing is off on this PC. Games still work - "
                     "ask a grown-up if you need a web page."),
     }))

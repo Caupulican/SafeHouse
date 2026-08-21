@@ -516,3 +516,53 @@ def test_a_corrupt_state_file_means_no_unlock(tmp_path):
     state, warn = load_state(p)
     assert state.unlock_until_ts == 0
     assert warn is not None
+
+
+# --- the on-screen message is off by default ---------------------------------
+# The parent's instruction is that the child must not be told a control is closing his
+# browser. That is a default, not a hard removal, so it is pinned by tests in both
+# directions: silent unless explicitly switched on.
+
+def test_notify_defaults_to_off(tmp_path):
+    cfg, warnings = load_config(tmp_path / "absent.json")
+    assert cfg.notify is False
+    assert warnings == []
+
+
+def test_notify_stays_off_for_a_config_that_does_not_mention_it(tmp_path):
+    p = tmp_path / "browser-guard.json"
+    p.write_text(json.dumps({"enabled": True, "delay_min_sec": 1, "delay_max_sec": 5}))
+    assert load_config(p)[0].notify is False
+
+
+def test_notify_can_be_switched_back_on(tmp_path):
+    p = tmp_path / "browser-guard.json"
+    p.write_text(json.dumps({"notify": True}))
+    cfg, warnings = load_config(p)
+    assert cfg.notify is True and warnings == []
+
+
+def test_a_non_boolean_notify_stays_silent_and_warns(tmp_path):
+    p = tmp_path / "browser-guard.json"
+    p.write_text(json.dumps({"notify": "yes"}))
+    cfg, warnings = load_config(p)
+    assert cfg.notify is False
+    assert any("notify" in w for w in warnings)
+
+
+def test_a_real_kill_puts_nothing_on_screen_by_default(tmp_path, monkeypatch):
+    """End to end: a browser is ended and nothing is ever put on screen."""
+    _, killed = arm(monkeypatch, tmp_path, ["msedge.exe"])
+    monkeypatch.setattr(browser_guard, "notify", explode)  # fails loudly if called
+    assert browser_guard.main(["--root", str(tmp_path)]) == 0
+    assert killed == [("msedge.exe",)]
+    assert "[kill] ending msedge.exe" in (tmp_path / "browser-guard.log").read_text()
+
+
+def test_switching_notify_on_does_put_the_message_on_screen(tmp_path, monkeypatch):
+    """The other direction: the switch has to actually still work."""
+    said = []
+    arm(monkeypatch, tmp_path, ["msedge.exe"], notify=True)
+    monkeypatch.setattr(browser_guard, "notify", lambda msg, *a, **kw: said.append(msg))
+    assert browser_guard.main(["--root", str(tmp_path)]) == 0
+    assert said == [DEFAULT_MESSAGE]
