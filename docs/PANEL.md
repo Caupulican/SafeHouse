@@ -86,7 +86,8 @@ that machine and the task has no console to print to.
 > Copy the password into your password manager and **delete `panel-password.txt`.** The
 > panel keeps only a scrypt hash; that file is the only copy of the password itself.
 
-**Changing it afterwards** is done from the panel, under **Panel access**. It asks for the
+**Changing it afterwards** is done from the panel, under **Acesso ao painel / Panel
+access** on the Sistema tab. It asks for the
 current password — a session left open on an unlocked phone must not be enough to lock you
 out of your own controls — and on success it **signs every other device out**, including
 any phone still holding a session. The browser doing the change is issued a fresh cookie in
@@ -129,7 +130,10 @@ parent's phone breaks, and that looks exactly like the panel being down.
 ### Reading it on a phone
 
 The layout is built at 360px and allowed to grow, because that is where it is actually
-read. Three things carry it:
+read. The page is split into **four tabs** — Início, Regras, DNS, Sistema — switched
+client-side with no reload; the active tab is remembered in localStorage and each tab is
+deep-linkable (`#inicio`, `#regras`, `#dns`, `#sistema`). Beyond that, three things
+carry the layout:
 
 * every grid track is `minmax(min(WIDTH, 100%), 1fr)` — a bare `minmax(280px, 1fr)` does
   not shrink below 280px, so on a narrow phone the cards pushed the page sideways;
@@ -140,6 +144,24 @@ read. Three things carry it:
   three controls fighting over one flex row.
 
 Buttons and fields are 40–42px tall. It follows the phone's light/dark setting.
+
+### Idioma / language
+
+The panel renders in **Brazilian Portuguese by default**, with an **EN/PT toggle** in the
+header (also on the login and setup screens). The choice is stored in localStorage per
+browser, wrapped in try/catch so private windows still render.
+
+How it works underneath: the server never speaks a language. Everything a parent reads —
+lane reasons, notes, fact labels, control result messages, errors — leaves `status.py` /
+`controls.py` as a **message key plus params** (`{"k": "ctl.unlock.on", "p": {"n": 30}}`),
+and the page renders it from the one catalog in `python/safehouse_panel/i18n.py`, which
+carries both languages side by side (a key cannot exist in only one). `panel.log` and the
+`self-test` console summary render the same messages back to English, so the audit trail
+stays grep-able. Status **codes** (ACTIVE, DEGRADED, BLOCKED…) stay English in the data
+and the API — CSS classes and tests key off them — and only their display words are
+translated (ATIVO, DEGRADADO, BLOQUEADO…). The one deliberate pass-through is text
+quoted from the machine itself: a watchdog step's command output, an unrecognised
+HRESULT, a guard config defect — shown verbatim.
 
 ---
 
@@ -212,30 +234,60 @@ DEGRADED — nothing is enforcing it, which is a fault, not a setting. A lane wh
 exists but is disabled is OFF. Collapsing those three into one word is how a dashboard ends
 up reassuring somebody about a protection that has not run in a month.
 
-0. **Right now** — one chip per lane at the top: Roblox, browsing, the resolver, DNS
-   filtering, YouTube and the panel itself, each with its status word and one line of
-   reason. It is the whole page in six lines, which is what a phone screen has room for.
-1. **Filtering resolver (WSL)** — see below. The section that would have caught the
-   2026-08-01 outage.
-2. **Enforcement lanes** — Roblox and web browsing: task state and last result, the budget,
-   minutes used today, any bonus or unlock in force, how many closes happened today, and
-   when the lane last acted. A third lane for the Play Games VM is planned; the page renders
-   whatever list it is given, so adding it is one entry.
-3. **Scheduled tasks** — every `SafeHouse-*` task, including the ones that are *missing*.
-   `SafeHouse-DNS` matters most: when it is not running the relay is not in the path and
-   nothing is filtered.
-4. **DNS filtering** — from AdGuard's own API: reachable, protection, filtering, every
-   filter list with rule count and last-updated, the allowlists, user-rule count, parental
-   control, Safe Browsing, safe search per engine, and whether Pi-hole answers on 5353.
-   YouTube is shown as **two independent lanes** — the user rules (which this panel drives)
-   and `blocked_services` (which the watch-time budget and `toggle youtube` drive).
-5. **Live verification** — resolves an ad domain, YouTube, an adult domain and a control
-   that must resolve, then reads AdGuard's verdict. On demand, not on the 10s refresh.
-6. **Browser policy** — per HKLM key: `DnsOverHttpsMode`, `ProxyMode`,
-   `BuiltInDnsClientEnabled`, `IncognitoModeAvailability`, `StartupBoostEnabled`,
-   `BackgroundModeEnabled`, `URLBlocklist`, the uBO forcelist. Per key, because Opera reads
-   the unspaced `OperaSoftware` key and writing the spaced one succeeds and does nothing.
-7. **Known gaps** — shown, not hidden, and labelled as accepted rather than as errors.
+The page is four tabs. Each piece of information lives in exactly one place (plus the
+chips, which are deliberately the only summary):
+
+**Início / Home** — the "is everything OK" screen:
+
+- **Agora** — one chip per lane: Roblox, browsing, the resolver, DNS filtering, YouTube
+  and the panel itself, each with its status word and one line of reason. It is the whole
+  page in six lines, which is what a phone screen has room for. Under it, in one line:
+  UNKNOWN is not OFF.
+- **Filtering resolver (WSL)** — see below. The card that would have caught the
+  2026-08-01 outage, with its **Iniciar agora / Start it now** button.
+- **Known gaps** — shown, not hidden, and labelled as accepted rather than as errors.
+
+**Regras / Rules** — one panel per enforcement lane, each merging that lane's live status
+with its own controls (status pill in the heading, reason, facts, the task's state in one
+line, then the sliders and switches):
+
+- **Roblox** — budget, used/left today, bonus, closes today; controls: daily minutes,
+  extra-today, kill-delay range. A third lane for the Play Games VM is planned; the page
+  renders whatever list it is given, so adding it is one more panel.
+- **Navegador / Browser** — enforcement, stored budget (marked *not enforced yet*),
+  unlock left, notify, closes today; controls: guard on/off, timed unlock, daily minutes
+  (stored only), tell-the-child, kill-delay range.
+- **YouTube** — the resolver block as **two independent lanes**: the user rules (which
+  this panel's mode control drives) and `blocked_services` (which the watch-time budget
+  and `toggle youtube` drive). Lifting one does not lift the other, and the panel says
+  so. The user-rules lane is driven by **three modes** — always blocked, allowed
+  windows, allowed — with a window editor when the schedule mode is chosen (see
+  *YouTube: allowed time windows* below).
+
+**DNS** — from AdGuard's own API: reachable, protection, filtering, parental control,
+Safe Browsing, safe search per engine, user-rule count, every filter list with rule count
+and last-updated (allowlists marked), and whether Pi-hole answers a real DNS query on
+5353 — asked **over TCP**, because WSL2 does not forward localhost UDP (see below). Plus **Live
+verification**: resolves an ad domain, YouTube, an adult domain and a control that must
+resolve, then reads AdGuard's verdict. On demand, not on the 10s refresh.
+
+**Sistema / System**:
+
+- **Scheduled tasks** — every `SafeHouse-*` task, including the ones that are *missing*.
+  `SafeHouse-DNS` matters most: when it is not running the relay is not in the path and
+  nothing is filtered. (The resolver task also shows on Início; this is the full table.)
+- **Browser policy** — per HKLM key: `DnsOverHttpsMode`, `ProxyMode`,
+  `BuiltInDnsClientEnabled`, `IncognitoModeAvailability`, `StartupBoostEnabled`,
+  `BackgroundModeEnabled`, `URLBlocklist`, the uBO forcelist. Per key, because Opera
+  reads the unspaced `OperaSoftware` key and writing the spaced one succeeds and does
+  nothing.
+- **Acesso ao painel / Panel access** — the change-password form.
+
+Long rationale lives in collapsed *"Por que funciona assim"* details elements; the
+always-visible text is one line per control. What never collapsed: unlock-before-reading
+on the guarded PC, notify-is-off-on-purpose, the browser budget being stored-not-enforced,
+unblocks not surviving `apply-filters.py`, the start button needing somebody signed in,
+and UNKNOWN not being OFF.
 
 ### The filtering resolver, and why "it answered" proves nothing
 
@@ -262,7 +314,10 @@ measuring rather than assuming:
 
 * **UDP to `127.0.0.1:5353` is not forwarded into WSL.** Only the relay listens on UDP 53;
   Pi-hole answers over WSL2's TCP localhost forwarding but not UDP, so a UDP probe reports
-  a perfectly healthy Pi-hole as dead. Pi-hole and AdGuard are checked with a TCP connect.
+  a perfectly healthy Pi-hole as dead. The resolver card checks Pi-hole and AdGuard with a
+  TCP connect, and the DNS tab's Pi-hole probe sends a real **DNS query over TCP**
+  (`dnsprobe.ask_tcp`, RFC 1035 length-prefix framing) — a UDP version of that probe
+  reported "no answer (timeout)" forever against a healthy container.
 * **Windows will not run WSL as LocalSystem at all** — `WSL_E_LOCAL_SYSTEM_NOT_SUPPORTED`,
   and it is not a permissions problem: distro registration lives in the user's own registry
   hive, so SYSTEM has no distros. The panel runs as SYSTEM, so it can *read* all of the
@@ -317,18 +372,23 @@ list and does not carry adult domain literals. Put one in `panel.json` under
 
 ## The controls
 
-| Control | Range | Writes | Weakening? |
+Every control lives on the tab of the thing it controls: the lane controls on **Regras**,
+inside their lane's panel; the resolver start button on **Início**; the password form on
+**Sistema**.
+
+| Control (tab) | Range | Writes | Weakening? |
 |---|---|---|---|
-| Roblox daily minutes | 0–240 | `roblox-budget.json` → `limit_min` | if raised |
-| Roblox extra minutes today | 0–240 | `roblox-budget.state.json` → `bonus_sec` | if > 0 |
-| Browser guard on/off | — | `browser-guard.json` → `enabled` | if off |
-| Unlock browsing for N min | 0–240 | `browser-guard.state.json` → `unlock_until_ts` | if > 0 |
-| Browser daily minutes | 0–240 | `browser-guard.json` → `limit_min` | if raised |
-| Tell the child when a browser closes | — | `browser-guard.json` → `notify` | no |
-| Kill delay, per lane | 1–60s | `delay_min_sec` / `delay_max_sec` | if raised |
-| YouTube at the resolver | — | AdGuard user rules | if allowed |
-| Start the filtering resolver | — | triggers `SafeHouse-Resolver` | no — it only restores filtering |
-| Change the panel password | ≥4 chars | `panel-auth.json` (hash only) | needs the **current** password |
+| Roblox daily minutes (Regras) | 0–240 | `roblox-budget.json` → `limit_min` | if raised |
+| Roblox extra minutes today (Regras) | 0–240 | `roblox-budget.state.json` → `bonus_sec` | if > 0 |
+| Browser guard on/off (Regras) | — | `browser-guard.json` → `enabled` | if off |
+| Unlock browsing for N min (Regras) | 0–240 | `browser-guard.state.json` → `unlock_until_ts` | if > 0 |
+| Browser daily minutes (Regras) | 0–240 | `browser-guard.json` → `limit_min` | if raised |
+| Tell the child when a browser closes (Regras) | — | `browser-guard.json` → `notify` | no |
+| Kill delay, per lane (Regras) | 1–60s | `delay_min_sec` / `delay_max_sec` | if raised |
+| YouTube mode + windows (Regras) | 3 modes, ≤ 8 windows | `youtube-schedule.json` + AdGuard user rules | if it opens any minute |
+| YouTube allow/block now (Regras) | until the next boundary | `youtube-schedule.json` → `override` + AdGuard user rules | if allowed now |
+| Start the filtering resolver (Início) | — | triggers `SafeHouse-Resolver` | no — it only restores filtering |
+| Change the panel password (Sistema) | ≥4 chars | `panel-auth.json` (hash only) | needs the **current** password |
 
 Every write is atomic (`atomicio.write_json`, the same rename-based write the guards use)
 and read-modify-write, so a hand-edited `message` or `users` survives a slider being moved.
@@ -345,9 +405,90 @@ Three things worth knowing before you touch them:
 - **`notify` is off at the parent's instruction** — the child sees the window close but is
   not told what closed it. The control is labelled "tell the child when a browser is
   closed" so nobody flips it by accident.
-- **Unblocking YouTube here does not survive `adguard/apply-filters.py`.** That reconciler
-  re-adds every rule in `adguard/user-rules.txt`, so an unblock that must last needs the
-  repo changed too. The panel says this in the result message.
+- **`adguard/apply-filters.py` re-adds the standing YouTube rules whenever it runs.**
+  That used to mean an unblock from the panel simply did not survive a reconcile. Now the
+  schedule reconciler (below) strips them again within a minute whenever the schedule says
+  YouTube is allowed right now — a deliberate, cheap tug-of-war that the schedule wins.
+  An unblock that must survive *without* a schedule still needs the repo changed too.
+
+### YouTube: allowed time windows
+
+The parent's standing policy is "blocked at all times, except the windows I define". The
+YouTube panel on Regras offers **three modes**, stored in
+`C:\ProgramData\SafeHouse\youtube-schedule.json` (written atomically, hand-editable,
+hand-added keys preserved):
+
+```json
+{ "mode": "schedule",
+  "windows": [ { "days": [5, 6] },
+               { "days": [3], "start": "14:00", "end": "15:00" } ],
+  "override": { "state": "ALLOWED", "until_ts": 1787502000 } }
+```
+
+| Mode | Meaning |
+|---|---|
+| `blocked` | always blocked — what the old checkbox meant. **Manual: absolute.** |
+| `allowed` | the panel's rules are lifted entirely. **Manual: absolute.** |
+| `schedule` | blocked except inside a window — the only mode the reconciler enforces |
+
+**Manual comes first.** The two manual modes are applied synchronously, in the request
+that set them, and the reconciler **never** overrides or "corrects" them — a parent who
+lifts the block by hand in the AdGuard UI while mode is `blocked` is not fought by a
+robot. If AdGuard refused a manual change, *nothing* is saved and the answer says
+nothing changed — press Apply again; no silent retry of a manual act.
+
+Facts that keep the schedule honest:
+
+- **Days are the primary unit.** A window with days and no times allows the **whole
+  day** — `{"days": [5, 6]}` is "weekends are open", and the editor seeds exactly that
+  when schedule mode is first chosen, so the canonical case is a couple of taps. Times,
+  when given, must come as a pair and refine the window.
+- **Days use Python's numbering: 0 = Monday … 6 = Sunday** (`datetime.weekday()`), on
+  both ends, so no translation layer can get them backwards. Times are the machine's
+  local clock (America/Sao_Paulo here).
+- **A window whose end is at or before its start crosses midnight**: `{"days": [4],
+  "start": "22:00", "end": "01:00"}` runs Friday 22:00 → Saturday 01:00.
+- **Validation is server-side like every control**: three known modes, at most 8
+  windows, `HH:MM` times (both or neither), at least one valid day, start ≠ end.
+  Malformed input is refused, never guessed.
+- **`override` is a manual hold on top of a running schedule** — the *Liberar agora* /
+  *Bloquear agora* buttons. It is applied on the spot, and expires at the **next
+  schedule boundary** (window edge or day change, whichever first — computed
+  server-side, never accepted from the page) or when the parent presses *Voltar ao
+  horário*. While it is active the panel says so plainly ("Liberado manualmente —
+  volta ao horário às 15:00") and the reconciler stands down exactly as for a manual
+  mode; the tick after expiry puts the schedule back in charge. Overriding to ALLOWED
+  asks for the password; to BLOCKED does not. Saving any mode clears the hold.
+- **Enforcement is a reconciler thread inside the panel process** (the one SafeHouse
+  process that runs 24/7, as SYSTEM under `SafeHouse-Panel`). Once a minute it re-reads
+  the file **from disk** — never a cached copy, so a manual change between ticks is
+  respected immediately — and, only while mode is `schedule` with no active override
+  and the desired state differs from AdGuard's live user-rules state, applies it
+  through the same rule filter the checkbox used, with the same guarantees: `@@` allow
+  rules are never touched, hand-typed rules survive, the `blocked_services` lane (owned
+  by the watch-time budget and `toggle youtube`) is never driven from here. Transitions
+  are logged to `panel.log`
+  (`[schedule] youtube: BLOCKED -> ALLOWED (window sat,sun all day)`); no-op ticks are
+  never logged; an unreachable or refusing AdGuard is logged once per outage and
+  retried every minute.
+- **Saving a schedule also applies it immediately** — and if AdGuard refused or did not
+  answer, the *schedule* is still saved (the reconciler exists to retry it) and the
+  message says so. Only manual modes roll back on failure.
+- **Failure directions**: no file → no schedule, nothing enforced (the repo's standing
+  rules own YouTube, as before this feature). A file that exists but does not parse →
+  reported as a defect, shown as always-blocked for the page and the password baseline,
+  and the reconciler enforces **nothing** it could not read.
+- **Weakening for the password re-ask is one rule**: does the new schedule allow YouTube
+  at any minute the old one blocked? Switching to `allowed`, adding a window, adding a
+  day, widening hours — all ask for the password. Blocking, removing and narrowing do
+  not. With no schedule stored yet, the baseline is the live rules state, and an
+  unreadable live state counts as blocked, so the comparison fails towards asking.
+- The Início chip and the Regras panel show the effective state plus **"por janela"**
+  context and the next change ("Libera sáb 14:00") when the schedule mode is active.
+- **The engine is lane-generic on purpose** (`safehouse_panel/schedule.py` is pure and
+  never mentions YouTube outside its docstrings): a browser or Roblox schedule later is
+  a second config file plus a consumer that applies its lane's own control — the window
+  arithmetic, override and weakening rules are already shared.
 
 The removal filter only ever drops SafeHouse's own YouTube lines, matched exactly. It never
 touches an `@@` allow rule — `@@||firebaseinstallations.googleapis.com^` is app identity,
@@ -371,7 +512,8 @@ checked.
 | AdGuard protection / lists | the AdGuard dashboard, `http://127.0.0.1:3000` |
 | Filter list rule counts | `curl -u admin:… http://127.0.0.1:3000/control/filtering/status` |
 | A probe verdict | AdGuard dashboard → Query log → the domain → the *reason* column |
-| Pi-hole on 5353 | in WSL: `dig +short example.com @127.0.0.1 -p 5353` |
+| Pi-hole on 5353 | in WSL: `dig +short example.com @127.0.0.1 -p 5353`; from Windows add `+tcp` — plain UDP is not forwarded and times out |
+| The YouTube schedule | `type C:\ProgramData\SafeHouse\youtube-schedule.json`, and the `[schedule]` lines in `panel.log` |
 | Browser policy | `edge://policy` / `opera://policy`, or `reg query "HKLM\SOFTWARE\Policies\OperaSoftware\Opera"` |
 | Everything at once | `python -m safehouse_panel self-test` (prints the whole snapshot as JSON, binds nothing) |
 | That the panel is up | `Get-Content C:\ProgramData\SafeHouse\panel.log -Tail 5` — `[start]` and hourly `[alive]` lines |
@@ -452,9 +594,11 @@ nslookup doubleclick.net 127.0.0.1   # must come back 0.0.0.0 / ::
 
 | Path | What |
 |---|---|
-| `python/safehouse_panel/status.py` | pure: readings in, dashboard out |
+| `python/safehouse_panel/status.py` | pure: readings in, dashboard out (as message keys + params) |
+| `python/safehouse_panel/i18n.py` | the ONE translation catalog (en + pt-BR), `msg()` and `render()` |
 | `python/safehouse_panel/collect.py` | the only impure module: PowerShell, registry, sockets, AdGuard |
 | `python/safehouse_panel/controls.py` | clamping, atomic writes, the YouTube rule filter |
+| `python/safehouse_panel/schedule.py` | pure: the YouTube schedule - validation, window arithmetic, the weakening rule |
 | `python/safehouse_panel/app.py` | routing, sessions, the cross-site rules — no sockets |
 | `python/safehouse_panel/auth.py` | password hashing, sessions, lockout |
 | `python/safehouse_panel/dnsprobe.py` | raw DNS queries and the query-log verdict |
@@ -464,5 +608,6 @@ nslookup doubleclick.net 127.0.0.1   # must come back 0.0.0.0 / ::
 | `C:\ProgramData\SafeHouse\panel-auth.json` | the password hash and salt |
 | `C:\ProgramData\SafeHouse\panel-password.txt` | only after `--generate`; **delete it** |
 | `C:\ProgramData\SafeHouse\panel.json` | optional: `port`, `bind`, `probes` |
+| `C:\ProgramData\SafeHouse\youtube-schedule.json` | the YouTube mode and its allowed windows |
 | `C:\ProgramData\SafeHouse\panel.log` | start, hourly heartbeat, every change, every refusal |
 | `C:\ProgramData\SafeHouse\resolver.json` | what the watchdog last did, and what it found |

@@ -15,14 +15,17 @@ from __future__ import annotations
 
 import os
 import socket
+import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 from safehouse_ytbudget import browser_guard, roblox_guard
 from safehouse_setup import resolver
 from safehouse_ytbudget.platform.adguard import AdGuardClient, AdGuardConfig
 
-from . import DEFAULT_PORT, DEFAULT_ROOT, controls, dnsprobe, status as statusmod
+from . import (DEFAULT_PORT, DEFAULT_ROOT, controls, dnsprobe, i18n,
+               schedule as schedmod, status as statusmod)
 
 PANEL_CONFIG = "panel.json"
 
@@ -150,6 +153,10 @@ class Collector:
         self.probes: dict | None = None
         self._clock = clock
         self._cache: dict[str, tuple[float, object]] = {}
+        # One writer at a time through AdGuard's read-modify-write of the user rules:
+        # the HTTP handlers are thread-per-request and the schedule reconciler is a
+        # thread of its own, and two interleaved RMWs would silently drop one's edit.
+        self._yt_lock = threading.Lock()
 
     def _cached(self, key: str, ttl: int, produce):
         now = self._clock()
@@ -205,6 +212,8 @@ class Collector:
             "resolver": self._resolver(tasks, now),
             "tasks": statusmod.task_rows(tasks),
             "dns": self._dns(client),
+            "youtube_schedule": schedmod.view(
+                *controls.read_youtube_schedule(self.root), now=now),
             "probes": self.probes,
             "policy": self._cached(
                 "policy", POLICY_TTL_SEC,
@@ -345,8 +354,117 @@ class Collector:
         handler = controls.ACTIONS.get(action)
         if handler is None:
             raise controls.ControlError(f"unknown control {action!r}")
-        if action == "youtube_blocked":
-            return handler(self.root, value, now=now, client=self.client())
+        if action in ("youtube_blocked", "youtube_schedule", "youtube_override"):
+            # Serialised: the schedule reconciler thread and the request threads all
+            # funnel their AdGuard read-modify-writes through this one lock.
+            with self._yt_lock:
+                return handler(self.root, value, now=now, client=self.client())
         if action == "resolver_start":
             return handler(self.root, value, now=now, collector=self)
         return handler(self.root, value, now=now)
+
+
+# --- the schedule reconciler --------------------------------------------------
+
+SCHEDULE_TICK_SEC = 60
+
+
+class ScheduleReconciler:
+    """Keeps AdGuard's user rules in the state youtube-schedule.json calls for -
+    but ONLY while `mode` is "schedule".
+
+    **The manual modes are absolute.** "blocked" and "allowed" are applied on the spot
+    by the Apply that set them (`set_youtube_schedule` writes AdGuard synchronously in
+    the request handler), and this thread never overrides or "corrects" them - a parent
+    who lifted the block by hand in the AdGuard UI, or whose apply-filters.py run
+    re-added it, must not have a robot silently fight that choice. Only a schedule is
+    the reconciler's to enforce, because only a schedule changes its mind at 14:00 on a
+    Saturday with nobody at the panel.
+
+    Runs as a daemon thread inside the panel process (the panel is up 24/7 as SYSTEM
+    under `SafeHouse-Panel`, which makes it the one process that can hold a schedule).
+    Once a minute it re-reads the file from disk - never a cached copy, so a manual
+    mode change between ticks is respected immediately - computes the desired state,
+    and ONLY when that differs from AdGuard's live user-rules state applies it through
+    the same `youtube_blocked` machinery the page uses: same rule filter, same
+    allow-rule guarantees, same lock against the request threads.
+
+    Logging is by transition, never by tick: a line a minute would bury panel.log, and
+    the interesting events are exactly four - a state change, the schedule file being
+    unreadable, AdGuard not answering, AdGuard refusing the write. Each failure is
+    logged once per outage, then retried silently every minute until it clears.
+
+    `adguard/apply-filters.py` re-adds the repo's standing YouTube rules whenever it
+    runs; during an allowed window of a schedule this thread strips them again within a
+    minute. That tug-of-war is known, cheap and documented in docs/PANEL.md. (Under
+    manual "allowed" nothing strips them - the old caveat about apply-filters.py
+    stands, and the control's own message says so.)
+    """
+
+    def __init__(self, collector: Collector, *, log, clock=time.time,
+                 sleep=time.sleep) -> None:
+        self.collector = collector
+        self.log = log
+        self.clock = clock
+        self.sleep = sleep
+        self._defect_logged = False
+        self._down_logged = False
+        self._fail_logged = False
+
+    def tick(self) -> None:
+        try:
+            self._tick()
+        except Exception as exc:  # noqa: BLE001 - the thread must outlive any surprise
+            self.log(f"[schedule] tick failed: {type(exc).__name__}: {exc}")
+
+    def _tick(self) -> None:
+        config, defect = controls.read_youtube_schedule(self.collector.root)
+        if defect is not None:
+            if not self._defect_logged:
+                self.log(f"[schedule] {i18n.render(defect)}")
+                self._defect_logged = True
+        else:
+            self._defect_logged = False
+        if config is None:
+            return  # no schedule was ever set; nothing is ours to enforce
+        if config["mode"] != "schedule":
+            # The manual modes are absolute. They were applied on the spot by the
+            # Apply that set them, and correcting them here would mean a robot
+            # silently fighting a person - including a parent lifting the block in
+            # the AdGuard UI itself. Only a schedule is ours to enforce.
+            return
+        now = self.clock()
+        if schedmod.override_active(config, int(now)) is not None:
+            # A manual hold on top of the schedule: stand down until it expires or
+            # is cleared, exactly as for a manual mode. The tick after its expiry
+            # puts the schedule back in charge.
+            return
+        moment = datetime.fromtimestamp(now)
+        desired = schedmod.desired_state(config, moment)
+        rules = self.collector.user_rules()
+        if rules is None:
+            if not self._down_logged:
+                self.log("[schedule] AdGuard did not answer; the schedule will keep "
+                         "retrying every minute")
+                self._down_logged = True
+            return
+        self._down_logged = False
+        live = controls.youtube_state(rules)
+        if live == desired:
+            self._fail_logged = False
+            return
+        outcome = self.collector.apply("youtube_blocked", desired == "BLOCKED",
+                                       now=int(self.clock()))
+        if outcome.ok:
+            self.log(f"[schedule] youtube: {live} -> {desired} "
+                     f"({schedmod.describe_cause(config, moment)})")
+            self._fail_logged = False
+        elif not self._fail_logged:
+            self.log(f"[schedule] could not make youtube {desired}: "
+                     f"{i18n.render(outcome.message)}")
+            self._fail_logged = True
+
+    def run_forever(self) -> None:
+        while True:
+            self.tick()
+            self.sleep(SCHEDULE_TICK_SEC)

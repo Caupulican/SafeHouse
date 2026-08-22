@@ -39,12 +39,12 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import DEFAULT_PORT, DEFAULT_ROOT
+from . import DEFAULT_PORT, DEFAULT_ROOT, i18n
 from .app import SAFE_HEADERS, Panel, Request, Response
 from .audit import audit
 from .auth import (MIN_PASSWORD_LEN, PasswordStore, _restrict_to_admins,
                    generate_password, password_advice, password_problem)
-from .collect import Collector, read_panel_config
+from .collect import Collector, ScheduleReconciler, read_panel_config
 
 MAX_BODY = 64 * 1024
 # One line an hour. The guards' rule - an idle process must not grind out a line a minute
@@ -219,6 +219,13 @@ def serve(*, root: Path, port: int, bind: str | None, loopback_only: bool) -> in
         _echo("  No password is set. Until one is, the panel serves only the "
               "instructions page.")
 
+    # The YouTube schedule lives or dies with this process: the panel is the one thing
+    # here that runs 24/7, so its process carries the once-a-minute reconciler. A
+    # daemon thread, so a panel shutdown never waits on a tick.
+    reconciler = ScheduleReconciler(collector, log=lambda message: audit(root, message))
+    threading.Thread(target=reconciler.run_forever, name="yt-schedule",
+                     daemon=True).start()
+
     try:
         last = time.monotonic()
         while True:
@@ -284,7 +291,7 @@ def set_password(root: Path, *, generate: bool, from_stdin: bool) -> int:
         password = sys.stdin.readline().rstrip("\r\n")
         problem = password_problem(password)
         if problem:
-            print(problem, file=sys.stderr)
+            print(i18n.render(problem), file=sys.stderr)
             return 1
     else:
         import getpass
@@ -301,7 +308,7 @@ def set_password(root: Path, *, generate: bool, from_stdin: bool) -> int:
             return 1
         problem = password_problem(password)
         if problem:
-            print(problem, file=sys.stderr)
+            print(i18n.render(problem), file=sys.stderr)
             return 1
     store.save(password)
     # The password itself is never logged. Where to find it is.
@@ -314,7 +321,7 @@ def set_password(root: Path, *, generate: bool, from_stdin: bool) -> int:
         # Said once, plainly, and not enforced. Refusing the parent's own choice of
         # password just moves it onto a note beside the keyboard.
         _echo("")
-        _echo(f"NOTE: {advice}")
+        _echo(f"NOTE: {i18n.render(advice)}")
         _echo("You can change it from the panel itself under Settings, once signed in.")
     if handout:
         _echo(f"The password itself is in {handout}. Store it, then delete that file.")
@@ -332,12 +339,14 @@ def self_test(root: Path, *, port: int) -> int:
 
     collector = Collector(root, port=port, bound=["(self-test, nothing bound)"])
     snapshot = collector.snapshot()
+    # The JSON carries messages as {"k": key, "p": params}; the one-line summary below
+    # renders them to English so the console stays readable.
     print(json.dumps(snapshot, indent=2, default=str))
     for lane in snapshot["lanes"]:
-        print(f"  {lane['label']:<14} {lane['status']:<9} {lane['reason']}",
-              file=sys.stderr)
-    print(f"  {'DNS':<14} {snapshot['dns']['status']:<9} {snapshot['dns']['reason']}",
-          file=sys.stderr)
+        print(f"  {i18n.render(lane['label']):<14} {lane['status']:<9} "
+              f"{i18n.render(lane['reason'])}", file=sys.stderr)
+    print(f"  {'DNS':<14} {snapshot['dns']['status']:<9} "
+          f"{i18n.render(snapshot['dns']['reason'])}", file=sys.stderr)
     return 0
 
 

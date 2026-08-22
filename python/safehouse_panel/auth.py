@@ -121,17 +121,22 @@ def generate_password(words: int = 4) -> str:
     )
 
 
-def password_problem(password: str) -> str | None:
-    """A reason to REFUSE this password outright, or None. Deliberately almost nothing."""
+def password_problem(password: str) -> dict | None:
+    """A reason to REFUSE this password outright, or None. Deliberately almost nothing.
+
+    Returned as a message (`i18n.msg`) so the page can say it in the parent's language;
+    `i18n.render` turns it back into English for the console.
+    """
+    from .i18n import msg
+
     if not isinstance(password, str) or not password.strip():
-        return "The password cannot be blank."
+        return msg("pw.blank")
     if len(password) < MIN_PASSWORD_LEN:
-        return (f"Use at least {MIN_PASSWORD_LEN} characters. "
-                f"The password was not changed.")
+        return msg("pw.short", n=MIN_PASSWORD_LEN)
     return None
 
 
-def password_advice(password: str) -> str:
+def password_advice(password: str) -> dict | str:
     """A warning to SHOW alongside a password that was accepted, or "".
 
     This exists because the panel can switch off every protection in the house, the child
@@ -139,15 +144,12 @@ def password_advice(password: str) -> str:
     is entitled to choose a weak password anyway - it is their house - but they are also
     entitled to be told once, plainly, rather than discovering the reasoning later.
     """
+    from .i18n import msg
+
     if password.isdigit():
-        return ("This password is digits only, so it is one of the first things anyone "
-                "guesses. The panel locks a device out for 15 minutes after 6 wrong "
-                "tries, which is what is holding the line here - and the child has "
-                "administrator on this PC, so he can read the panel's own log.")
+        return msg("pw.advice.digits")
     if len(password) < 8:
-        return ("Short passwords lean entirely on the lockout after 6 wrong tries. "
-                "Eight characters or more is a real step up and you only type it once "
-                "per device.")
+        return msg("pw.advice.short")
     return ""
 
 

@@ -9,9 +9,12 @@ below pins that with the real address in it.
 
 from __future__ import annotations
 
+import socket
 import struct
+import threading
 
 from safehouse_panel import dnsprobe
+from safehouse_panel.i18n import render
 
 ADGUARD_BLOCK_PAGE = "94.140.14.35"
 
@@ -47,6 +50,105 @@ def test_an_answer_is_parsed_back_to_its_addresses():
 def test_a_truncated_packet_does_not_raise():
     assert dnsprobe.parse_response(b"\x00\x01") == {"rcode": None, "addresses": []}
     assert dnsprobe.parse_response(b"")["addresses"] == []
+
+
+# --- DNS over TCP ------------------------------------------------------------
+#
+# The Pi-hole check MUST use TCP: the panel runs on Windows and WSL2 forwards localhost
+# TCP only into the VM, so a UDP probe to 127.0.0.1:5353 times out against a Pi-hole
+# that is up and answering. That was measured live on 2026-08-22 - container healthy,
+# TCP connect fine, UDP probe "no answer (timeout)".
+
+def a_dns_answer(address=(93, 184, 216, 34)) -> bytes:
+    header = struct.pack("!HHHHHH", 1, 0x8180, 1, 1, 0, 0)
+    question = b"\x07example\x03com\x00" + struct.pack("!HH", 1, 1)
+    answer = b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 60, 4) + bytes(address)
+    return header + question + answer
+
+
+def tcp_dns_server(response: bytes | None) -> tuple[int, dict]:
+    """One-shot fake resolver speaking RFC 1035 4.2.2 framing. Returns (port, seen)."""
+    seen: dict = {}
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+
+    def run():
+        conn, _ = server.accept()
+        try:
+            prefix = conn.recv(2)
+            length = struct.unpack("!H", prefix)[0]
+            query = b""
+            while len(query) < length:
+                query += conn.recv(length - len(query))
+            seen["prefix"], seen["query"] = prefix, query
+            if response is not None:
+                conn.sendall(struct.pack("!H", len(response)) + response)
+        finally:
+            conn.close()
+            server.close()
+
+    threading.Thread(target=run, daemon=True).start()
+    return port, seen
+
+
+def test_a_tcp_query_is_length_prefixed_and_the_answer_parsed_back():
+    port, seen = tcp_dns_server(a_dns_answer())
+    result = dnsprobe.ask_tcp("example.com", server="127.0.0.1", port=port, timeout=3.0)
+    assert result["answered"] is True and result["error"] is None
+    assert result["addresses"] == ["93.184.216.34"] and result["rcode"] == 0
+    # The query itself is the same packet `ask` sends, behind a 2-byte length prefix.
+    assert struct.unpack("!H", seen["prefix"])[0] == len(seen["query"])
+    assert b"\x07example\x03com\x00" in seen["query"]
+
+
+def test_a_refused_tcp_connection_is_no_answer_not_an_exception():
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()  # nothing listens there any more
+    result = dnsprobe.ask_tcp("example.com", server="127.0.0.1", port=port, timeout=1.0)
+    assert result["answered"] is False and result["error"]
+
+
+def test_a_connection_closed_mid_answer_is_no_answer():
+    port, _ = tcp_dns_server(None)  # accepts the query, then hangs up
+    result = dnsprobe.ask_tcp("example.com", server="127.0.0.1", port=port, timeout=2.0)
+    assert result["answered"] is False
+    assert "closed" in result["error"]
+
+
+def test_resolver_alive_asks_over_tcp_because_wsl2_forwards_tcp_only():
+    """THE fix for the false 'no answer': a healthy Pi-hole behind WSL2's TCP-only
+    localhost forwarding must read ACTIVE, not UNKNOWN."""
+    port, seen = tcp_dns_server(a_dns_answer())
+    view = dnsprobe.resolver_alive("127.0.0.1", port)
+    assert view["status"] == "ACTIVE"
+    assert view["server"] == f"127.0.0.1:{port}"
+    assert view["detail"]["k"] == "pihole.v.ms"
+    assert "answered in" in render(view["detail"])
+    assert seen["query"], "the probe never actually spoke TCP"
+
+
+def test_resolver_alive_reports_unknown_when_nothing_answers_tcp():
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    view = dnsprobe.resolver_alive("127.0.0.1", port, timeout=1.0)
+    assert view["status"] == "UNKNOWN"
+    assert view["detail"]["k"] == "pihole.v.none"
+
+
+def test_resolver_alive_keeps_the_result_shape_the_page_reads():
+    view = dnsprobe.resolver_alive("127.0.0.1", 1,
+                                   asker=lambda name, *, server, port, timeout: {
+                                       "answered": True, "error": None, "addresses": [],
+                                       "rcode": 0, "elapsed_ms": 7})
+    assert set(view) == {"server", "status", "detail"}
+    assert view == {"server": "127.0.0.1:1", "status": "ACTIVE",
+                    "detail": {"k": "pihole.v.ms", "p": {"ms": 7}}}
 
 
 # --- verdicts ----------------------------------------------------------------
@@ -97,7 +199,8 @@ def test_a_probe_with_no_query_log_entry_is_not_a_pass():
              "expect": "BLOCKED", "why": ""}
     result = dnsprobe.probe_result(probe, None, {"addresses": []})
     assert result["verdict"] == "UNKNOWN" and result["ok"] is False
-    assert "did not reach AdGuard" in result["detail"]
+    assert result["detail"] == {"k": "probe.detail.nolog"}
+    assert "did not reach AdGuard" in render(result["detail"])
 
 
 def test_the_newest_entry_for_the_domain_wins_and_others_are_ignored():
@@ -129,7 +232,9 @@ def test_the_adult_probe_ships_without_a_domain_and_says_how_to_set_one():
     assert probes["adult"]["domain"] is None
     result = dnsprobe.probe_result(probes["adult"], None, None)
     assert result["verdict"] == "UNKNOWN" and result["ok"] is False
-    assert "panel.json" in result["detail"]
+    assert "panel.json" in render(result["detail"])
+    # the probe's own key is substituted into the instruction
+    assert '"adult"' in render(result["detail"])
 
 
 def test_a_configured_adult_domain_is_used():

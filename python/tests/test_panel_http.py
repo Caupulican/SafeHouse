@@ -19,6 +19,7 @@ import pytest
 
 from safehouse_panel import controls
 from safehouse_panel.app import Panel, Request
+from safehouse_panel.i18n import render
 from safehouse_panel.auth import (
     SESSION_COOKIE,
     PasswordStore,
@@ -44,7 +45,7 @@ class FakeCollector:
                        "browser_enabled": True, "browser_limit_min": None,
                        "browser_unlock_min": 0, "browser_notify": False,
                        "roblox_delay_sec": [1, 5], "browser_delay_sec": [1, 5],
-                       "youtube_blocked": "BLOCKED"}
+                       "youtube_blocked": "BLOCKED", "youtube_schedule": None}
 
     def snapshot(self, **_):
         return {"lanes": [], "now": {"stamp": "2026-08-21 20:00:00"}}
@@ -192,7 +193,8 @@ def test_a_mutation_without_an_origin_header_is_refused(panel):
     response = post(panel, "/api/set", {"action": "browser_enabled", "value": True},
                     cookie=cookie, origin=None, fetch_site=None)
     assert response.status == 403
-    assert "Origin" in body(response)["error"]
+    assert body(response)["error"]["k"] == "err.cross"
+    assert "Origin" in render(body(response)["error"])
 
 
 def test_login_itself_is_protected_from_cross_site_posts(panel):
@@ -269,6 +271,117 @@ def test_every_change_is_written_to_the_panel_log_with_the_source(panel):
     log = (panel.root / "panel.log").read_text()
     assert "[change] roblox_limit_min" in log
     assert "192.168.1.60" in log
+
+
+def test_switching_youtube_to_allowed_is_weakening_and_needs_the_password(panel):
+    cookie = sign_in(panel)
+    payload = {"action": "youtube_schedule",
+               "value": {"mode": "allowed", "windows": []}}
+    refused = post(panel, "/api/set", payload, cookie=cookie)
+    assert refused.status == 403 and body(refused)["needs_password"] is True
+    assert panel.collector.applied == []
+    accepted = post(panel, "/api/set", {**payload, "password": PASSWORD}, cookie=cookie)
+    assert accepted.status == 200
+    assert panel.collector.applied == [("youtube_schedule",
+                                        {"mode": "allowed", "windows": []})]
+
+
+def test_adding_an_allowed_window_is_weakening_too(panel):
+    cookie = sign_in(panel)
+    value = {"mode": "schedule",
+             "windows": [{"days": [5, 6], "start": "14:00", "end": "15:00"}]}
+    refused = post(panel, "/api/set", {"action": "youtube_schedule", "value": value},
+                   cookie=cookie)
+    assert refused.status == 403 and body(refused)["needs_password"] is True
+
+
+def test_blocking_youtube_by_schedule_needs_only_the_session(panel):
+    cookie = sign_in(panel)
+    response = post(panel, "/api/set",
+                    {"action": "youtube_schedule",
+                     "value": {"mode": "blocked", "windows": []}}, cookie=cookie)
+    assert response.status == 200
+    assert panel.collector.applied == [("youtube_schedule",
+                                        {"mode": "blocked", "windows": []})]
+
+
+def test_allow_now_is_weakening_and_block_now_is_not(panel):
+    cookie = sign_in(panel)
+    refused = post(panel, "/api/set",
+                   {"action": "youtube_override", "value": {"state": "ALLOWED"}},
+                   cookie=cookie)
+    assert refused.status == 403 and body(refused)["needs_password"] is True
+    assert panel.collector.applied == []
+    accepted = post(panel, "/api/set",
+                    {"action": "youtube_override", "value": {"state": "BLOCKED"}},
+                    cookie=cookie)
+    assert accepted.status == 200
+    assert panel.collector.applied == [("youtube_override", {"state": "BLOCKED"})]
+
+
+def full_collector(tmp_path, rules):
+    """The REAL Collector with only the AdGuard client faked: /api/set runs the whole
+    path - weakening check, validation, the schedule file, the rule filter."""
+    import sys
+    from pathlib import Path as P
+
+    sys.path.insert(0, str(P(__file__).parent))
+    from test_panel_controls import FakeAdGuard
+    from safehouse_panel.collect import Collector
+
+    collector = Collector(tmp_path)
+    collector._client = FakeAdGuard(rules)
+    return collector
+
+
+def test_the_full_route_blocks_youtube_end_to_end(tmp_path):
+    """Task-3 coverage: the exact POST the page sends, through the real Collector and
+    controls, down to the rules AdGuard would receive and the schedule file on disk."""
+    import json as jsonmod
+
+    from safehouse_panel import controls as controlsmod, schedule as schedmod
+
+    store = PasswordStore(tmp_path)
+    store.save(PASSWORD)
+    collector = full_collector(tmp_path, [])
+    made = Panel(collector=collector, store=store,
+                 allowed_hosts={"192.168.1.50"}, root=tmp_path)
+    # no session yet: refused, nothing written
+    response = post(made, "/api/set",
+                    {"action": "youtube_schedule",
+                     "value": {"mode": "blocked", "windows": []}})
+    assert response.status == 401 and collector._client.written is None
+    login = post(made, "/api/login", {"password": PASSWORD})
+    cookie = dict(login.headers)["Set-Cookie"].split(";")[0].split("=", 1)[1]
+    response = post(made, "/api/set",
+                    {"action": "youtube_schedule",
+                     "value": {"mode": "blocked", "windows": []}}, cookie=cookie)
+    assert response.status == 200 and body(response)["ok"] is True
+    assert controlsmod.youtube_state(collector._client.rules) == "BLOCKED"
+    stored = jsonmod.loads((tmp_path / schedmod.SCHEDULE_CONFIG).read_text(
+        encoding="utf-8-sig"))
+    assert stored["mode"] == "blocked"
+    log = (tmp_path / "panel.log").read_text()
+    assert "[change] youtube_schedule: 'unset' -> 'blocked'" in log
+
+
+def test_the_full_route_refuses_a_malformed_schedule(tmp_path):
+    from safehouse_panel import schedule as schedmod
+
+    store = PasswordStore(tmp_path)
+    store.save(PASSWORD)
+    collector = full_collector(tmp_path, [])
+    made = Panel(collector=collector, store=store,
+                 allowed_hosts={"192.168.1.50"}, root=tmp_path)
+    login = post(made, "/api/login", {"password": PASSWORD})
+    cookie = dict(login.headers)["Set-Cookie"].split(";")[0].split("=", 1)[1]
+    response = post(made, "/api/set",
+                    {"action": "youtube_schedule", "value": {"mode": "sometimes"},
+                     "password": PASSWORD}, cookie=cookie)
+    assert response.status == 400
+    assert body(response)["error"]["k"] == "err.sched.mode"
+    assert collector._client.written is None
+    assert not (tmp_path / schedmod.SCHEDULE_CONFIG).exists()
 
 
 def test_probes_need_a_session_and_a_same_origin_request(panel):
@@ -374,7 +487,9 @@ def test_a_mismatched_confirmation_changes_nothing(panel):
     response = post(panel, "/api/password",
                     {"current": PASSWORD, "new": "abcd1234", "confirm": "abcd12345"},
                     cookie=cookie)
-    assert response.status == 400 and "do not match" in body(response)["error"]
+    assert response.status == 400
+    assert body(response)["error"] == {"k": "err.pwmatch"}
+    assert "do not match" in render(body(response)["error"])
     assert panel.store.verify(PASSWORD)
 
 
@@ -387,7 +502,8 @@ def test_a_short_pin_is_accepted_but_comes_with_a_warning(panel):
                     cookie=cookie)
     assert response.status == 200
     assert panel.store.verify("123456")
-    assert "guesses" in body(response)["advice"]
+    assert body(response)["advice"]["k"] == "pw.advice.digits"
+    assert "guesses" in render(body(response)["advice"])
 
 
 def test_a_blank_or_one_character_password_is_refused(panel):

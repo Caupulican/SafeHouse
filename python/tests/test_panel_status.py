@@ -12,10 +12,22 @@ from __future__ import annotations
 import json
 
 from safehouse_panel import collect, status
+from safehouse_panel.i18n import render
 
 
 NOW = 1_755_800_000  # 2025-08-21 in the local zone of whatever runs this
 TODAY = "2026-08-21"
+
+
+# Human-facing text is keys+params now (see i18n.py); rendering through the ONE catalog
+# and asserting on the English keeps these tests pinned to both the key wiring and the
+# catalog text, without hardcoding a second copy of the prose.
+def facts_of(view) -> dict:
+    return {render(f["label"]): render(f["value"]) for f in view["facts"]}
+
+
+def notes_of(view) -> list[str]:
+    return [render(n) for n in view["notes"]]
 
 
 def tasks_json(*rows) -> str:
@@ -33,7 +45,8 @@ def test_parses_the_task_query_and_names_the_state():
     parsed = status.parse_tasks(tasks_json(a_task("SafeHouse-BrowserGuard")))
     assert parsed[0]["state"] == "Ready"
     assert parsed[0]["enabled"] is True
-    assert parsed[0]["last_result_text"] == "OK"
+    assert parsed[0]["last_result_text"] == {"k": "task.res.ok"}
+    assert render(parsed[0]["last_result_text"]) == "OK"
 
 
 def test_a_single_task_arrives_as_a_bare_object():
@@ -54,7 +67,8 @@ def test_unreadable_task_output_is_none_not_empty():
 def test_signed_hresults_are_read_as_unsigned():
     parsed = status.parse_tasks(tasks_json(a_task("SafeHouse-DNS", last_result=-2147024894)))
     assert parsed[0]["last_result"] == 0x80070002
-    assert parsed[0]["last_result_text"] == "the program could not be found"
+    assert parsed[0]["last_result_text"] == {"k": "task.res.notfound"}
+    assert render(parsed[0]["last_result_text"]) == "the program could not be found"
 
 
 def test_never_run_placeholder_dates_are_not_shown_as_dates():
@@ -95,7 +109,8 @@ def test_a_missing_task_is_degraded_not_off():
     setting somebody chose."""
     lane = roblox(status.task_view(status.ROBLOX_TASK, []))
     assert lane["status"] == status.DEGRADED
-    assert "nothing is enforcing" in lane["reason"]
+    assert lane["reason"]["k"] == "lane.reason.notask"
+    assert "nothing is enforcing" in render(lane["reason"])
 
 
 def test_a_disabled_task_is_off():
@@ -108,14 +123,15 @@ def test_zero_minutes_is_active_because_it_is_the_strictest_setting():
     tasks = status.parse_tasks(tasks_json(a_task(status.ROBLOX_TASK)))
     lane = roblox(status.task_view(status.ROBLOX_TASK, tasks), limit=0)
     assert lane["status"] == status.ACTIVE
-    assert any("zero minutes" in note for note in lane["notes"])
+    assert any("zero minutes" in note for note in notes_of(lane))
 
 
 def test_a_failing_last_run_degrades_the_lane():
     tasks = status.parse_tasks(tasks_json(a_task(status.ROBLOX_TASK, last_result=1)))
     lane = roblox(status.task_view(status.ROBLOX_TASK, tasks))
     assert lane["status"] == status.DEGRADED
-    assert "returned 1" in lane["reason"]
+    # the nested last-result message renders inside the reason
+    assert "returned 1" in render(lane["reason"])
 
 
 def test_a_broken_config_degrades_the_lane_and_says_so():
@@ -130,11 +146,11 @@ def test_bonus_is_shown_but_does_not_degrade_the_lane():
     tasks = status.parse_tasks(tasks_json(a_task(status.ROBLOX_TASK)))
     lane = roblox(status.task_view(status.ROBLOX_TASK, tasks), limit=30, bonus=15, used=60)
     assert lane["status"] == status.ACTIVE
-    facts = {f["label"]: f["value"] for f in lane["facts"]}
+    facts = facts_of(lane)
     assert facts["Bonus today"] == "15 min"
     assert facts["Used today"] == "1 min 0s"
     assert facts["Left today"] == "44 min 0s"  # 30 + 15 bonus, one minute spent
-    assert any("expires at midnight" in note for note in lane["notes"])
+    assert any("expires at midnight" in note for note in notes_of(lane))
 
 
 def browser(task, *, enabled=True, unlock_until=0, limit=None, notify=False, defects=()):
@@ -151,14 +167,15 @@ def test_a_parent_unlock_is_degraded_not_active():
     tasks = status.parse_tasks(tasks_json(a_task(status.BROWSER_TASK)))
     lane = browser(status.task_view(status.BROWSER_TASK, tasks), unlock_until=NOW + 600)
     assert lane["status"] == status.DEGRADED
-    assert "unlock" in lane["reason"]
+    assert lane["reason"]["k"] == "browser.reason.unlocked"
+    assert "unlock" in render(lane["reason"])
 
 
 def test_disabled_in_config_is_off():
     tasks = status.parse_tasks(tasks_json(a_task(status.BROWSER_TASK)))
     lane = browser(status.task_view(status.BROWSER_TASK, tasks), enabled=False)
     assert lane["status"] == status.OFF
-    assert "browser-guard.json" in lane["reason"]
+    assert "browser-guard.json" in render(lane["reason"])
 
 
 def test_the_browser_budget_is_labelled_as_not_enforced():
@@ -166,15 +183,15 @@ def test_the_browser_budget_is_labelled_as_not_enforced():
     that caveat would be a slider that silently does nothing."""
     tasks = status.parse_tasks(tasks_json(a_task(status.BROWSER_TASK)))
     lane = browser(status.task_view(status.BROWSER_TASK, tasks), limit=45)
-    assert any("does not meter yet" in note for note in lane["notes"])
-    facts = {f["label"]: f["value"] for f in lane["facts"]}
+    assert any("does not meter yet" in note for note in notes_of(lane))
+    facts = facts_of(lane)
     assert "not enforced yet" in facts["Daily budget"]
 
 
 def test_silent_closing_is_stated_on_the_lane():
     tasks = status.parse_tasks(tasks_json(a_task(status.BROWSER_TASK)))
     lane = browser(status.task_view(status.BROWSER_TASK, tasks), notify=False)
-    assert any("not told" in note for note in lane["notes"])
+    assert any("not told" in note for note in notes_of(lane))
 
 
 # --- logs --------------------------------------------------------------------
@@ -238,7 +255,8 @@ def test_an_unreachable_resolver_is_unknown_and_warns_about_failing_open():
     view = dns(server=None, filtering=None, parental=None, safebrowsing=None,
                safesearch=None, youtube_service=None)
     assert view["status"] == status.UNKNOWN
-    assert "fails OPEN" in view["reason"]
+    assert view["reason"]["k"] == "dns.reason.noanswer"
+    assert "fails OPEN" in render(view["reason"])
     assert view["parental"]["status"] == status.UNKNOWN
 
 
@@ -295,7 +313,8 @@ def test_the_known_gaps_are_on_the_page_and_name_the_real_ones():
 
 def test_the_dns_bypass_gap_names_the_resolver_that_walks_around_everything():
     gap = next(g for g in status.KNOWN_GAPS if g["id"] == "plain-dns-bypass")
-    assert "8.8.8.8" in gap["detail"] and "8.8.8.8" in gap["verify"]
+    assert "8.8.8.8" in render(gap["detail"]) and "8.8.8.8" in gap["verify"]
+    assert "8.8.8.8" in render(gap["detail"], "pt")
 
 
 # --- the collector's cost on a machine whose job is running games ------------
@@ -356,5 +375,5 @@ def test_yesterdays_usage_is_not_charged_against_today(tmp_path, monkeypatch):
                             roblox_guard.GuardState(date="2000-01-01", used_sec=7200,
                                                     last_running_ts=None, bonus_sec=600))
     lane = collector(tmp_path, monkeypatch, lambda: 0.0).snapshot()["lanes"][0]
-    facts = {f["label"]: f["value"] for f in lane["facts"]}
+    facts = facts_of(lane)
     assert facts["Used today"] == "0 min 0s" and facts["Bonus today"] == "none"

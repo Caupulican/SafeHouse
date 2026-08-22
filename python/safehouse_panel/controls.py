@@ -29,6 +29,9 @@ from pathlib import Path
 from safehouse_ytbudget import browser_guard, roblox_guard
 from safehouse_ytbudget.atomicio import write_json
 
+from . import i18n, schedule
+from .i18n import msg
+
 # --- ranges ------------------------------------------------------------------
 # The upper bounds are the panel's, not the guards': `roblox_guard.load_limit_sec`
 # accepts up to 24h, but a slider that can hand out a whole day is a slider that will
@@ -51,13 +54,27 @@ BROWSER_STATE = "browser-guard.state.json"
 
 
 class ControlError(ValueError):
-    """A value the panel refuses to act on. The message is shown to the parent."""
+    """A value the panel refuses to act on. The payload is shown to the parent.
+
+    The payload is a message (a `{"k": ..., "p": ...}` dict from `i18n.msg`, or a list of
+    them) so the page can render it in the parent's language; `str()` renders the English
+    for the audit log and the console.
+    """
+
+    def __init__(self, payload: object) -> None:
+        super().__init__(payload)
+        self.payload = payload
+
+    def __str__(self) -> str:
+        return i18n.render(self.payload)
 
 
 @dataclass(frozen=True)
 class Outcome:
     ok: bool
-    message: str
+    # A message: a string, an `i18n.msg` dict, or a list of either. The page renders it
+    # in the parent's language; `i18n.render` turns it back into English for the log.
+    message: object
     before: object = None
     after: object = None
     detail: str = ""
@@ -72,20 +89,21 @@ def coerce_int(value: object, *, field: str) -> int:
     minutes field into "one minute" - a value nobody chose, silently accepted.
     """
     if isinstance(value, bool) or value is None:
-        raise ControlError(f"{field} must be a whole number, got {value!r}")
+        raise ControlError(msg("err.notint", field=field, got=repr(value)))
     if isinstance(value, int):
         return value
     if isinstance(value, float):
         if value != int(value):
-            raise ControlError(f"{field} must be a whole number, got {value!r}")
+            raise ControlError(msg("err.notint", field=field, got=repr(value)))
         return int(value)
     if isinstance(value, str):
         text = value.strip()
         try:
             return int(text, 10)
         except ValueError:
-            raise ControlError(f"{field} must be a whole number, got {value!r}") from None
-    raise ControlError(f"{field} must be a whole number, got {value!r}")
+            raise ControlError(msg("err.notint", field=field,
+                                   got=repr(value))) from None
+    raise ControlError(msg("err.notint", field=field, got=repr(value)))
 
 
 def coerce_bool(value: object, *, field: str) -> bool:
@@ -94,20 +112,21 @@ def coerce_bool(value: object, *, field: str) -> bool:
     if isinstance(value, str) and value.strip().lower() in {"true", "false", "1", "0",
                                                             "on", "off", "yes", "no"}:
         return value.strip().lower() in {"true", "1", "on", "yes"}
-    raise ControlError(f"{field} must be true or false, got {value!r}")
+    raise ControlError(msg("err.notbool", field=field, got=repr(value)))
 
 
-def clamp(value: int, bounds: tuple[int, int], *, field: str) -> tuple[int, str]:
-    """Return (value inside `bounds`, note describing any clamping)."""
+def clamp(value: int, bounds: tuple[int, int], *, field) -> tuple[int, dict | None]:
+    """Return (value inside `bounds`, message describing any clamping, or None)."""
     low, high = bounds
     if value < low:
-        return low, f"{field} {value} is below the minimum, applied {low}"
+        return low, msg("clamp.low", field=field, got=value, applied=low)
     if value > high:
-        return high, f"{field} {value} is above the maximum, applied {high}"
-    return value, ""
+        return high, msg("clamp.high", field=field, got=value, applied=high)
+    return value, None
 
 
-def coerce_minutes(value: object, bounds: tuple[int, int], *, field: str) -> tuple[int, str]:
+def coerce_minutes(value: object, bounds: tuple[int, int],
+                   *, field) -> tuple[int, dict | None]:
     return clamp(coerce_int(value, field=field), bounds, field=field)
 
 
@@ -139,15 +158,18 @@ def update_config(path: Path, changes: dict) -> tuple[dict, dict]:
 # --- the actions -------------------------------------------------------------
 
 def set_roblox_limit(root: Path, value: object, *, now: int) -> Outcome:
-    minutes, note = coerce_minutes(value, ROBLOX_LIMIT_RANGE, field="Roblox daily minutes")
+    minutes, note = coerce_minutes(value, ROBLOX_LIMIT_RANGE,
+                                   field=msg("field.roblox_limit"))
     path = Path(root) / ROBLOX_CONFIG
     before, _ = update_config(path, {"limit_min": minutes})
     was = before.get("limit_min", "unset")
-    message = f"Roblox daily budget is now {minutes} min (was {was})."
+    parts = [msg("ctl.roblox_limit.done", n=minutes,
+                 was=msg("v.unset") if was == "unset" else was)]
     if minutes == 0:
-        message += " Zero means the game is closed within a minute of launching."
-    return Outcome(True, (message + (" " + note if note else "")).strip(),
-                   before=was, after=minutes)
+        parts.append(msg("ctl.roblox_limit.zero"))
+    if note:
+        parts.append(note)
+    return Outcome(True, parts, before=was, after=minutes)
 
 
 def set_roblox_bonus(root: Path, value: object, *, now: int) -> Outcome:
@@ -158,7 +180,8 @@ def set_roblox_bonus(root: Path, value: object, *, now: int) -> Outcome:
     A parent who granted an hour in the config file at 19:00 has quietly changed the
     standing policy instead.
     """
-    minutes, note = coerce_minutes(value, ROBLOX_BONUS_RANGE, field="Roblox bonus minutes")
+    minutes, note = coerce_minutes(value, ROBLOX_BONUS_RANGE,
+                                   field=msg("field.roblox_bonus"))
     path = Path(root) / ROBLOX_STATE
     today = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
     state, _ = roblox_guard.load_state(path, today)
@@ -166,22 +189,19 @@ def set_roblox_bonus(root: Path, value: object, *, now: int) -> Outcome:
         state = roblox_guard.GuardState.fresh(today)
     was = state.bonus_sec // 60
     roblox_guard.save_state(path, replace(state, bonus_sec=minutes * 60))
-    message = (f"Roblox bonus for today is now {minutes} min (was {was})."
-               if minutes else f"Today's Roblox bonus of {was} min has been taken back.")
-    return Outcome(True, (message + " It expires at midnight."
-                          + (" " + note if note else "")).strip(),
-                   before=was, after=minutes)
+    parts = [msg("ctl.bonus.set", n=minutes, was=was) if minutes
+             else msg("ctl.bonus.back", was=was),
+             msg("ctl.bonus.midnight")]
+    if note:
+        parts.append(note)
+    return Outcome(True, parts, before=was, after=minutes)
 
 
 def set_browser_enabled(root: Path, value: object, *, now: int) -> Outcome:
-    enabled = coerce_bool(value, field="Browser guard enabled")
+    enabled = coerce_bool(value, field=msg("field.browser_enabled"))
     before, _ = update_config(Path(root) / BROWSER_CONFIG, {"enabled": enabled})
     was = before.get("enabled", True)
-    return Outcome(True,
-                   ("Browser guard is ENFORCING - any browser is closed within about a "
-                    "minute." if enabled else
-                    "Browser guard is OFF. Nothing closes a browser now, and this does "
-                    "not expire by itself - use the unlock button for a timed pass."),
+    return Outcome(True, msg("ctl.browser.on" if enabled else "ctl.browser.off"),
                    before=was, after=enabled)
 
 
@@ -196,14 +216,14 @@ def set_browser_limit(root: Path, value: object, *, now: int) -> Outcome:
     nothing.
     """
     minutes, note = coerce_minutes(value, BROWSER_LIMIT_RANGE,
-                                   field="Browser daily minutes")
+                                   field=msg("field.browser_limit"))
     before, _ = update_config(Path(root) / BROWSER_CONFIG, {"limit_min": minutes})
     was = before.get("limit_min", "unset")
-    return Outcome(True,
-                   (f"Stored a browser budget of {minutes} min/day (was {was}). "
-                    "NOT ENFORCED YET - the browser lane still closes every browser; "
-                    "metering is separate work." + (" " + note if note else "")).strip(),
-                   before=was, after=minutes)
+    parts = [msg("ctl.blimit.stored", n=minutes,
+                 was=msg("v.unset") if was == "unset" else was)]
+    if note:
+        parts.append(note)
+    return Outcome(True, parts, before=was, after=minutes)
 
 
 def set_browser_unlock(root: Path, value: object, *, now: int) -> Outcome:
@@ -214,55 +234,55 @@ def set_browser_unlock(root: Path, value: object, *, now: int) -> Outcome:
     close the window it is being read in, within about a minute - so unlock first, or
     read it from a phone.
     """
-    minutes, note = coerce_minutes(value, BROWSER_UNLOCK_RANGE, field="Unlock minutes")
+    minutes, note = coerce_minutes(value, BROWSER_UNLOCK_RANGE,
+                                   field=msg("field.unlock"))
     path = Path(root) / BROWSER_STATE
     state, _ = browser_guard.load_state(path)
     was = max(0, (state.unlock_until_ts - now + 59) // 60)
     browser_guard.save_state(path, replace(state,
                                            unlock_until_ts=now + minutes * 60 if minutes
                                            else 0))
-    message = (f"Browsing is unlocked for {minutes} min." if minutes
-               else "Unlock cancelled - the browser guard is enforcing again.")
-    return Outcome(True, (message + (" " + note if note else "")).strip(),
-                   before=was, after=minutes)
+    parts = [msg("ctl.unlock.on", n=minutes) if minutes else msg("ctl.unlock.off")]
+    if note:
+        parts.append(note)
+    return Outcome(True, parts, before=was, after=minutes)
 
 
 def set_browser_notify(root: Path, value: object, *, now: int) -> Outcome:
-    notify = coerce_bool(value, field="Notify")
+    notify = coerce_bool(value, field=msg("field.notify"))
     before, _ = update_config(Path(root) / BROWSER_CONFIG, {"notify": notify})
     was = before.get("notify", False)
-    return Outcome(True,
-                   ("The child will now see a message on screen when a browser is closed."
-                    if notify else
-                    "Browsers close silently - the child is not told why."),
+    return Outcome(True, msg("ctl.notify.on" if notify else "ctl.notify.off"),
                    before=was, after=notify)
 
 
-def _set_delay(path: Path, payload: object, *, label: str) -> Outcome:
+def _set_delay(path: Path, payload: object, *, label: dict) -> Outcome:
     if not isinstance(payload, dict):
-        raise ControlError(f"{label} needs a min and a max")
+        raise ControlError(msg("err.delayneeds", label=label))
     low, note_low = coerce_minutes(payload.get("min_sec"), DELAY_RANGE,
-                                   field=f"{label} minimum")
+                                   field=msg("field.minof", label=label))
     high, note_high = coerce_minutes(payload.get("max_sec"), DELAY_RANGE,
-                                     field=f"{label} maximum")
+                                     field=msg("field.maxof", label=label))
     notes = [n for n in (note_low, note_high) if n]
     if high < low:
         high = low
-        notes.append("the maximum was below the minimum, so both are now the minimum")
+        notes.append(msg("ctl.delay.swap"))
     before, _ = update_config(path, {"delay_min_sec": low, "delay_max_sec": high})
     was = (before.get("delay_min_sec", "unset"), before.get("delay_max_sec", "unset"))
     return Outcome(True,
-                   (f"{label} is now {low}-{high}s (was {was[0]}-{was[1]}s)."
-                    + (" " + "; ".join(notes) if notes else "")),
+                   [msg("ctl.delay.set", label=label, lo=low, hi=high,
+                        wlo=was[0], whi=was[1])] + notes,
                    before=list(was), after=[low, high])
 
 
 def set_roblox_delay(root: Path, value: object, *, now: int) -> Outcome:
-    return _set_delay(Path(root) / ROBLOX_CONFIG, value, label="Roblox kill delay")
+    return _set_delay(Path(root) / ROBLOX_CONFIG, value,
+                      label=msg("field.roblox_delay"))
 
 
 def set_browser_delay(root: Path, value: object, *, now: int) -> Outcome:
-    return _set_delay(Path(root) / BROWSER_CONFIG, value, label="Browser kill delay")
+    return _set_delay(Path(root) / BROWSER_CONFIG, value,
+                      label=msg("field.browser_delay"))
 
 
 # --- YouTube, at the resolver ------------------------------------------------
@@ -356,30 +376,133 @@ def set_youtube_blocked(root: Path, value: object, *, now: int, client=None) -> 
     both and drives only this one, so lifting a block here cannot silently undo a block
     the budget applied for a reason of its own.
     """
-    blocked = coerce_bool(value, field="YouTube blocked")
+    blocked = coerce_bool(value, field=msg("field.youtube"))
     if client is None:
-        return Outcome(False, "AdGuard Home is not configured on this machine "
-                              "(no usable adguard.json), so YouTube cannot be changed "
-                              "at the resolver.")
+        return Outcome(False, msg("ctl.yt.noconfig"))
     live = client.user_rules()
     if live is None:
-        return Outcome(False, "AdGuard Home did not answer, so nothing was changed. "
-                              "The resolver may be down - check WSL.")
+        return Outcome(False, msg("ctl.yt.noanswer"))
     was = youtube_state(live)
     wanted = add_youtube_rules(live) if blocked else remove_youtube_rules(live)
     if wanted == live:
-        return Outcome(True, f"YouTube was already {was.lower()} at the resolver; "
-                             f"nothing to change.", before=was, after=was)
+        return Outcome(True, msg("ctl.yt.already", state=msg("st." + was)),
+                       before=was, after=was)
     result = client.set_user_rules(wanted)
     if result != "OK":
-        return Outcome(False, f"AdGuard Home refused the change ({result}). "
-                              f"YouTube is still {was.lower()}.", before=was, after=was)
+        return Outcome(False, msg("ctl.yt.refused", r=result, state=msg("st." + was)),
+                       before=was, after=was)
     now_state = "BLOCKED" if blocked else "ALLOWED"
-    note = ("" if blocked else
-            " Note: adguard/apply-filters.py re-adds these rules when it next runs, so "
-            "an unblock that must survive a reconcile needs the repo changed too.")
-    return Outcome(True, f"YouTube is now {now_state.lower()} at the resolver." + note,
-                   before=was, after=now_state)
+    parts = [msg("ctl.yt.now", state=msg("st." + now_state))]
+    if not blocked:
+        parts.append(msg("ctl.yt.reconcile"))
+    return Outcome(True, parts, before=was, after=now_state)
+
+
+# --- the YouTube schedule ----------------------------------------------------
+
+def read_youtube_schedule(root: Path) -> tuple[dict | None, dict | None]:
+    """(config, defect) from youtube-schedule.json.
+
+    Missing file -> (None, None): no schedule was ever set and nothing enforces one.
+    Present but broken -> always-blocked plus a defect message, the strict direction
+    every guard config falls back towards.
+    """
+    path = Path(root) / schedule.SCHEDULE_CONFIG
+    if not path.exists():
+        return None, None
+    return schedule.normalize(read_config(path))
+
+
+def set_youtube_schedule(root: Path, value: object, *, now: int, client=None) -> Outcome:
+    """Store the mode (and windows) and put the resolver in the state it calls for now.
+
+    The failure order differs by mode, deliberately:
+
+    * **Manual modes ("blocked" / "allowed") are absolute and immediate.** The AdGuard
+      change is applied synchronously, right here in the request; if it fails, NOTHING
+      is saved and the outcome says nothing changed - no robot retries a manual act the
+      parent can simply press again, and the reconciler never touches manual modes.
+    * **"schedule" saves the policy first**, because the reconciler exists to enforce
+      it: if AdGuard refuses or does not answer, the schedule is still stored and the
+      outcome says the panel retries every minute.
+
+    Setting any mode clears a standing override: the parent just restated the whole
+    policy, and a leftover hold from before that statement would be the robot's idea,
+    not theirs.
+    """
+    try:
+        cfg = schedule.validate(value)
+    except schedule.ScheduleError as exc:
+        raise ControlError(exc.payload) from None
+    before_cfg, _ = read_youtube_schedule(root)
+    was_mode = before_cfg["mode"] if before_cfg else "unset"
+    changes = {"mode": cfg["mode"], "windows": cfg["windows"], "override": None}
+    parts: list[object] = [msg("ctl.sched." + cfg["mode"])]
+    if cfg["mode"] == "schedule" and not cfg["windows"]:
+        parts.append(msg("ctl.sched.nowin"))
+    desired = schedule.desired_state(cfg, datetime.fromtimestamp(now))
+
+    if cfg["mode"] == "schedule":
+        update_config(Path(root) / schedule.SCHEDULE_CONFIG, changes)
+        applied = set_youtube_blocked(root, desired == "BLOCKED", now=now,
+                                      client=client)
+        tail = applied.message if isinstance(applied.message, list) else [applied.message]
+        if not applied.ok:
+            return Outcome(False, parts + [msg("ctl.sched.retry")] + tail,
+                           before=was_mode, after=cfg["mode"])
+        return Outcome(True, parts + tail, before=was_mode, after=cfg["mode"])
+
+    applied = set_youtube_blocked(root, desired == "BLOCKED", now=now, client=client)
+    tail = applied.message if isinstance(applied.message, list) else [applied.message]
+    if not applied.ok:
+        return Outcome(False, tail, before=was_mode, after=was_mode)
+    update_config(Path(root) / schedule.SCHEDULE_CONFIG, changes)
+    return Outcome(True, parts + tail, before=was_mode, after=cfg["mode"])
+
+
+def set_youtube_override(root: Path, value: object, *, now: int, client=None) -> Outcome:
+    """A manual hold on top of a running schedule: allow now, block now, or clear.
+
+    `value` is `{"state": "ALLOWED"}`, `{"state": "BLOCKED"}` or `{"state": null}`.
+    The expiry is computed HERE, never accepted from the page: the next schedule
+    boundary (window edge or day change), whichever comes first. Setting a hold is a
+    manual act, so it follows the manual rule - applied synchronously, and nothing is
+    saved if AdGuard refused. Clearing hands control back to the schedule, so the clear
+    is saved first and the reconciler finishes the job if AdGuard is down.
+    """
+    if not isinstance(value, dict) or value.get("state") not in ("ALLOWED", "BLOCKED",
+                                                                 None):
+        raise ControlError(msg("err.ovr.state"))
+    state = value.get("state")
+    cfg, defect = read_youtube_schedule(root)
+    if cfg is None or defect is not None or cfg["mode"] != "schedule":
+        return Outcome(False, msg("ctl.ovr.noschedule"))
+    moment = datetime.fromtimestamp(now)
+    path = Path(root) / schedule.SCHEDULE_CONFIG
+
+    if state is None:  # back to the schedule
+        update_config(path, {"override": None})
+        desired = schedule.desired_state(cfg, moment)
+        applied = set_youtube_blocked(root, desired == "BLOCKED", now=now,
+                                      client=client)
+        tail = applied.message if isinstance(applied.message, list) else [applied.message]
+        if not applied.ok:
+            return Outcome(False, [msg("ctl.ovr.cleared"), msg("ctl.sched.retry")]
+                           + tail, before="override", after="schedule")
+        return Outcome(True, [msg("ctl.ovr.cleared")] + tail,
+                       before="override", after="schedule")
+
+    until = schedule.override_until(cfg, moment)
+    applied = set_youtube_blocked(root, state == "BLOCKED", now=now, client=client)
+    tail = applied.message if isinstance(applied.message, list) else [applied.message]
+    if not applied.ok:
+        return Outcome(False, tail, before="schedule", after="schedule")
+    update_config(path, {"override": {"state": state,
+                                      "until_ts": int(until.timestamp())}})
+    when = until.strftime("%H:%M")
+    return Outcome(True, [msg("ctl.ovr.allowed" if state == "ALLOWED"
+                              else "ctl.ovr.blocked", t=when)] + tail,
+                   before="schedule", after=f"override {state} until {when}")
 
 
 # --- the filtering resolver --------------------------------------------------
@@ -400,21 +523,13 @@ def start_resolver(root: Path, value: object, *, now: int, collector=None) -> Ou
     success nobody has verified.
     """
     if collector is None:
-        return Outcome(False, "The resolver watchdog cannot be reached from here.")
+        return Outcome(False, msg("ctl.resolver.unreachable"))
     result = collector.start_resolver()
     if not result.get("ok"):
-        detail = result.get("detail") or "the scheduler refused the request"
-        return Outcome(False,
-                       f"Could not start {RESOLVER_TASK}: {detail} "
-                       f"Two things cause this: the task is not registered "
-                       f"(install.py --resolver-only), or nobody is signed in to the PC - "
-                       f"WSL cannot be started without a user session.")
-    return Outcome(True,
-                   "Asked the resolver watchdog to run. Starting WSL and both containers "
-                   "takes up to a minute; this page will show them answering when they "
-                   "do. If it still says down after a minute, nobody is signed in to the "
-                   "PC or WSL itself is refusing to start.",
-                   before="asked", after="asked")
+        detail = result.get("detail") or msg("ctl.resolver.refused")
+        return Outcome(False, msg("ctl.resolver.failed", task=RESOLVER_TASK,
+                                  detail=detail))
+    return Outcome(True, msg("ctl.resolver.asked"), before="asked", after="asked")
 
 
 RESOLVER_TASK = "SafeHouse-Resolver"
@@ -430,6 +545,8 @@ ACTIONS = {
     "roblox_delay_sec": set_roblox_delay,
     "browser_delay_sec": set_browser_delay,
     "youtube_blocked": set_youtube_blocked,
+    "youtube_schedule": set_youtube_schedule,
+    "youtube_override": set_youtube_override,
     "resolver_start": start_resolver,
 }
 
@@ -467,6 +584,11 @@ def current_values(root: Path, *, now: int, user_rules: list[str] | None = None)
         "browser_delay_sec": [browser_cfg.get("delay_min_sec", 1),
                               browser_cfg.get("delay_max_sec", 5)],
         "youtube_blocked": youtube_state(user_rules),
+        "youtube_schedule": (sched_cfg := read_youtube_schedule(root)[0]),
+        # The schedule's own verdict for right now, override excluded - what clearing
+        # an override would hand control back to. For the weakening test.
+        "youtube_schedule_now": (schedule.desired_state(
+            sched_cfg, datetime.fromtimestamp(now)) if sched_cfg else None),
     }
 
 
@@ -497,6 +619,33 @@ def _weakens(action: str, new: object, current: dict) -> bool:
         return not coerce_bool(new, field="enabled")
     if action == "youtube_blocked":
         return not coerce_bool(new, field="blocked")
+    if action == "youtube_schedule":
+        # One rule covers switching to "allowed", adding a window, adding a day and
+        # widening hours alike: does the new schedule allow YouTube at any minute the
+        # old one did not? With no schedule stored yet, the baseline is the live rules
+        # state - and an unreadable live state ("PARTIAL"/"UNKNOWN") counts as blocked,
+        # so an unanswerable comparison fails towards asking for the password.
+        try:
+            cfg = schedule.validate(new)
+        except schedule.ScheduleError:
+            return True
+        old = current.get("youtube_schedule")
+        if old is None:
+            old = {"mode": "allowed" if current.get("youtube_blocked") == "ALLOWED"
+                   else "blocked", "windows": []}
+        return schedule.weakens(cfg, old)
+    if action == "youtube_override":
+        if not isinstance(new, dict):
+            return True
+        state = new.get("state")
+        if state == "BLOCKED":
+            return False  # blocking now only ever tightens
+        if state is None:
+            # Clearing the hold weakens exactly when the schedule would allow right
+            # now and the live state is blocked; anything unreadable asks.
+            return (current.get("youtube_schedule_now") == "ALLOWED"
+                    and current.get("youtube_blocked") != "ALLOWED")
+        return True  # "ALLOWED", and anything unrecognised, asks
     if action in ("roblox_delay_sec", "browser_delay_sec"):
         if not isinstance(new, dict):
             return True

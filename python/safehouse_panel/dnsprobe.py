@@ -14,6 +14,13 @@ reasons: `getaddrinfo` is answered from the Windows DNS client cache, so a cache
 never reaches AdGuard and leaves no query-log entry to read; and it hides which resolver
 answered, when "which resolver answered" is exactly what a verification probe is for.
 
+**There is also a TCP transport (`ask_tcp`), and the Pi-hole liveness check uses it.**
+The panel runs on Windows and Pi-hole listens inside WSL on 5353; WSL2's localhost
+forwarding carries **TCP only**, so a UDP packet to `127.0.0.1:5353` is silently dropped
+and a perfectly healthy Pi-hole reads as "no answer (timeout)". Same query builder and
+parser, framed per RFC 1035 4.2.2: a two-byte big-endian length prefix on both the query
+and the answer.
+
 Stdlib only: `socket`, `struct`, `random`.
 """
 
@@ -23,6 +30,8 @@ import random
 import socket
 import struct
 import time
+
+from .i18n import msg
 
 # AdGuard's own reason strings. Anything starting with "Filtered" is a block EXCEPT
 # "NotFiltered*", which is why this is an explicit set rather than a prefix test.
@@ -54,15 +63,13 @@ REWRITE_REASONS = {"Rewrite", "RewriteEtcHosts", "RewriteRule"}
 # missing probe would leave a hole on the page that looks like a pass.
 BUILTIN_PROBES = (
     {"key": "ads", "domain": "doubleclick.net", "expect": "BLOCKED",
-     "label": "Ad network", "why": "the ad and tracker lists are loaded and matching"},
+     "label": msg("probe.ads.label"), "why": msg("probe.ads.why")},
     {"key": "youtube", "domain": "www.youtube.com", "expect": "BLOCKED",
-     "label": "YouTube", "why": "the standing YouTube block is live at the resolver"},
+     "label": msg("probe.youtube.label"), "why": msg("probe.youtube.why")},
     {"key": "adult", "domain": None, "expect": "BLOCKED",
-     "label": "Adult content", "why": "the NSFW list is loaded and matching"},
+     "label": msg("probe.adult.label"), "why": msg("probe.adult.why")},
     {"key": "control", "domain": "example.com", "expect": "ALLOWED",
-     "label": "Control (must resolve)",
-     "why": "the resolver is answering at all - without this, everything blocked looks "
-            "like everything working"},
+     "label": msg("probe.control.label"), "why": msg("probe.control.why")},
 )
 
 
@@ -139,15 +146,60 @@ def ask(name: str, *, server: str = "127.0.0.1", port: int = 53,
     return parsed
 
 
+def _recv_exact(sock: socket.socket, count: int) -> bytes:
+    """Exactly `count` bytes, or ConnectionError if the peer closed mid-answer."""
+    data = b""
+    while len(data) < count:
+        chunk = sock.recv(count - len(data))
+        if not chunk:
+            raise ConnectionError("the resolver closed the connection mid-answer")
+        data += chunk
+    return data
+
+
+def ask_tcp(name: str, *, server: str = "127.0.0.1", port: int = 53,
+            timeout: float = 3.0) -> dict:
+    """Send one query over TCP and return what came back. Never raises.
+
+    Same packet as `ask`, framed with the two-byte length prefix DNS-over-TCP uses
+    (RFC 1035 4.2.2). This transport exists for one measured reason: WSL2 forwards
+    localhost **TCP only** into the VM, so a UDP probe at `127.0.0.1:5353` times out
+    against a Pi-hole that is up, healthy and answering.
+    """
+    packet = build_query(name)
+    started = time.monotonic()
+    try:
+        with socket.create_connection((server, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(struct.pack("!H", len(packet)) + packet)
+            length = struct.unpack("!H", _recv_exact(sock, 2))[0]
+            data = _recv_exact(sock, length)
+    except OSError as exc:
+        return {"answered": False, "error": f"{type(exc).__name__}: {exc}",
+                "addresses": [], "rcode": None,
+                "elapsed_ms": int((time.monotonic() - started) * 1000)}
+    parsed = parse_response(data)
+    parsed.update({"answered": True, "error": None,
+                   "elapsed_ms": int((time.monotonic() - started) * 1000)})
+    return parsed
+
+
 def resolver_alive(server: str, port: int, *, name: str = "example.com",
-                   timeout: float = 2.0) -> dict:
-    """Is something answering DNS at `server:port`? Used for the Pi-hole check on 5353."""
-    result = ask(name, server=server, port=port, timeout=timeout)
+                   timeout: float = 2.0, asker=ask_tcp) -> dict:
+    """Is something answering DNS at `server:port`? Used for the Pi-hole check on 5353.
+
+    Asks over **TCP**, deliberately. The panel runs on Windows; only the relay listens on
+    UDP 53 there, and WSL2 does not forward localhost UDP into the VM at all - so a UDP
+    probe reported a perfectly healthy Pi-hole as "no answer (timeout)" forever. TCP
+    crosses the forwarding, and a resolver that answers on TCP is a resolver that is up.
+    """
+    result = asker(name, server=server, port=port, timeout=timeout)
     return {
         "server": f"{server}:{port}",
         "status": "ACTIVE" if result.get("answered") else "UNKNOWN",
-        "detail": ("answered in %dms" % result["elapsed_ms"] if result.get("answered")
-                   else f"no answer ({result.get('error') or 'timeout'})"),
+        "detail": (msg("pihole.v.ms", ms=result["elapsed_ms"])
+                   if result.get("answered")
+                   else msg("pihole.v.none", err=result.get("error") or "timeout")),
     }
 
 
@@ -207,16 +259,14 @@ def probe_result(probe: dict, entry: dict | None, dns: dict | None) -> dict:
     if not domain:
         return {**_row(probe), "verdict": "UNKNOWN", "ok": False, "reason": None,
                 "rule": "", "addresses": [],
-                "detail": "no domain configured for this probe - set "
-                          '"probes": {"%s": "<domain>"} in panel.json' % probe["key"]}
+                "detail": msg("probe.detail.nodomain", probe=probe["key"])}
     reason = str(entry.get("reason")) if entry else None
     verdict = classify(reason)
     expected = probe.get("expect", "BLOCKED")
     if entry is None:
-        detail = ("the query did not reach AdGuard (nothing in its query log). "
-                  "Either the resolver is not in the path, or the query log is off.")
+        detail = msg("probe.detail.nolog")
     else:
-        detail = f"AdGuard reason: {reason}"
+        detail = msg("probe.detail.reason", reason=reason)
     return {
         **_row(probe),
         "verdict": verdict,

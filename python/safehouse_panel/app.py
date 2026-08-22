@@ -41,9 +41,10 @@ from http.cookies import SimpleCookie
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import audit as auditmod, controls, page
+from . import audit as auditmod, controls, i18n, page
 from .auth import (SESSION_COOKIE, PasswordStore, Sessions, Throttle,
                    password_advice, password_problem)
+from .i18n import msg
 
 SAFE_HEADERS = (
     ("Cache-Control", "no-store, no-cache, must-revalidate"),
@@ -170,7 +171,7 @@ class Panel:
     # --- routing ---------------------------------------------------------
     def handle(self, req: Request) -> Response:
         if not self._host_ok(req):
-            return json_response(421, {"error": "This is not a name this panel answers to."})
+            return json_response(421, {"error": msg("err.host")})
 
         route = (req.method, req.path.rstrip("/") or "/")
         if route == ("GET", "/"):
@@ -207,19 +208,16 @@ class Panel:
         cross = self._cross_site(req)
         if cross is not None:
             self._audit(auditmod.format_denied("login", who=req.client, why=cross))
-            return json_response(403, {"error": "This request did not come from the "
-                                                "panel's own page."})
+            return json_response(403, {"error": msg("err.cross.login")})
         if not self.store.configured:
-            return json_response(503, {"error": "No password is set on this panel yet. "
-                                                "Run `python -m safehouse_panel "
-                                                "set-password` on the machine."})
+            return json_response(503, {"error": msg("err.nopw")})
         now = self.clock()
         locked = self.throttle.locked_for(req.client, now)
         if locked:
             self._audit(auditmod.format_denied(
                 "login", who=req.client, why=f"locked out for another {locked}s"))
-            return json_response(429, {"error": f"Too many failed attempts. Try again in "
-                                                f"{locked // 60 + 1} minute(s)."})
+            return json_response(429, {"error": msg("err.lockout",
+                                                    min=locked // 60 + 1)})
         password = str(req.json().get("password", ""))
         if not self.store.verify(password):
             delay = self.throttle.record_failure(req.client, now)
@@ -228,7 +226,7 @@ class Panel:
             self._audit(f"[auth] FAILED login from {req.client} "
                         f"(stalling {delay}s before answering)")
             self.sleep(delay)
-            return json_response(401, {"error": "Wrong password."})
+            return json_response(401, {"error": msg("err.wrongpw")})
         self.throttle.record_success(req.client)
         token = self.sessions.create(req.client)
         self._audit(f"[auth] login from {req.client}")
@@ -264,13 +262,12 @@ class Panel:
         if cross is not None:
             self._audit(auditmod.format_denied("a password change", who=req.client,
                                                why=cross))
-            return json_response(403, {"error": f"Cross-site request refused ({cross}). "
-                                                f"The password was not changed."})
+            return json_response(403, {"error": msg("err.cross.pw", why=cross)})
         now = self.clock()
         locked = self.throttle.locked_for(req.client, now)
         if locked:
-            return json_response(429, {"error": f"Too many failed attempts. Try again in "
-                                                f"{locked // 60 + 1} minute(s)."})
+            return json_response(429, {"error": msg("err.lockout",
+                                                    min=locked // 60 + 1)})
         payload = req.json()
         current = str(payload.get("current", ""))
         if not self.store.verify(current):
@@ -278,13 +275,11 @@ class Panel:
             self._audit(f"[auth] FAILED password change from {req.client} "
                         f"(current password wrong)")
             self.sleep(delay)
-            return json_response(401, {"error": "That is not the current password. "
-                                                "Nothing was changed."})
+            return json_response(401, {"error": msg("err.curpw")})
         self.throttle.record_success(req.client)
         new = str(payload.get("new", ""))
         if new != str(payload.get("confirm", new)):
-            return json_response(400, {"error": "The two new passwords do not match. "
-                                                "Nothing was changed."})
+            return json_response(400, {"error": msg("err.pwmatch")})
         problem = password_problem(new)
         if problem:
             return json_response(400, {"error": problem})
@@ -293,8 +288,7 @@ class Panel:
         except OSError as exc:
             self._audit(f"[error] the password could not be written: "
                         f"{type(exc).__name__}: {exc}")
-            return json_response(500, {"error": f"Could not write the new password: "
-                                                f"{exc}"})
+            return json_response(500, {"error": msg("err.pwwrite", detail=str(exc))})
         dropped = self.sessions.revoke_all()
         token = self.sessions.create(req.client)
         # The password itself is never logged, here or anywhere.
@@ -302,14 +296,13 @@ class Panel:
                     f"{dropped} session(s) signed out")
         return json_response(200, {
             "ok": True,
-            "message": ("Password changed. Every other device has been signed out."
-                        if dropped > 1 else "Password changed."),
+            "message": msg("ok.pwchanged.all" if dropped > 1 else "ok.pwchanged"),
             "advice": password_advice(new),
         }, headers=[("Set-Cookie", _cookie(token))])
 
     def _require_session(self, req: Request) -> Response | None:
         if self._session(req) is None:
-            return json_response(401, {"error": "Not signed in.", "login": True})
+            return json_response(401, {"error": msg("err.session"), "login": True})
         return None
 
     # --- data ------------------------------------------------------------
@@ -325,7 +318,7 @@ class Panel:
             return denied
         cross = self._cross_site(req)
         if cross is not None:
-            return json_response(403, {"error": f"Cross-site request refused ({cross})."})
+            return json_response(403, {"error": msg("err.cross", why=cross)})
         return json_response(200, {"probes": self.collector.run_probes()})
 
     # --- mutations -------------------------------------------------------
@@ -337,13 +330,12 @@ class Panel:
         if cross is not None:
             self._audit(auditmod.format_denied("a settings change", who=req.client,
                                                why=cross))
-            return json_response(403, {"error": f"Cross-site request refused ({cross}). "
-                                                f"Nothing was changed."})
+            return json_response(403, {"error": msg("err.cross", why=cross)})
         payload = req.json()
         action = str(payload.get("action", ""))
         value = payload.get("value")
         if action not in controls.ACTIONS:
-            return json_response(400, {"error": f"Unknown control {action!r}."})
+            return json_response(400, {"error": msg("err.unknownctl", action=action)})
 
         now = int(self.clock())
         current = self.collector.control_state(now)["values"]
@@ -351,41 +343,41 @@ class Panel:
         if needs:
             locked = self.throttle.locked_for(req.client, self.clock())
             if locked:
-                return json_response(429, {"error": f"Too many failed attempts. Try "
-                                                    f"again in {locked // 60 + 1} "
-                                                    f"minute(s)."})
+                return json_response(429, {"error": msg("err.lockout",
+                                                        min=locked // 60 + 1)})
             supplied = str(payload.get("password", ""))
             if not supplied:
                 return json_response(403, {
                     "needs_password": True,
-                    "error": "This change makes a protection weaker, so it needs the "
-                             "panel password again."})
+                    "error": msg("err.needspw")})
             if not self.store.verify(supplied):
                 delay = self.throttle.record_failure(req.client, self.clock())
                 self._audit(f"[auth] FAILED re-authorisation for {action} "
                             f"from {req.client}")
                 self.sleep(delay)
                 return json_response(401, {"needs_password": True,
-                                           "error": "Wrong password. Nothing was changed."})
+                                           "error": msg("err.wrongpw.nochange")})
             self.throttle.record_success(req.client)
 
         try:
             outcome = self.collector.apply(action, value, now=now)
         except controls.ControlError as exc:
+            # The audit log is grep-able English; the parent's page renders the same
+            # message from its key in their own language.
             self._audit(auditmod.format_denied(action, who=req.client, why=str(exc)))
-            return json_response(400, {"error": str(exc)})
+            return json_response(400, {"error": exc.payload})
         except OSError as exc:
             # Writing ProgramData as a standard user fails here rather than silently, and
             # the parent is told, because a control that quietly does nothing is worse
             # than one that says it could not.
             self._audit(f"[error] {action} could not be written: "
                         f"{type(exc).__name__}: {exc}")
-            return json_response(500, {"error": f"Could not write the change: {exc}"})
+            return json_response(500, {"error": msg("err.write", detail=str(exc))})
 
         self._audit(auditmod.format_change(
             action, outcome.before, outcome.after,
             who=req.client + (" (re-authorised)" if needs else ""),
-            detail=outcome.message if not outcome.ok else ""))
+            detail=i18n.render(outcome.message) if not outcome.ok else ""))
         return json_response(200 if outcome.ok else 502,
                              {"ok": outcome.ok, "message": outcome.message,
                               "before": outcome.before, "after": outcome.after})
