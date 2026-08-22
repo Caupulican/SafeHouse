@@ -31,6 +31,8 @@ LIVE_TASK = "SafeHouse-YouTubeBudget-Py"
 SHADOW_TASK = "SafeHouse-YouTubeBudget-PyShadow"
 ROBLOX_TASK = "SafeHouse-RobloxBudget"
 BROWSER_TASK = "SafeHouse-BrowserGuard"
+PLAYGAMES_TASK = "SafeHouse-PlayGamesGuard"
+VOLUME_TASK = "SafeHouse-VolumeGuard"
 PANEL_TASK = "SafeHouse-Panel"
 RESOLVER_TASK = "SafeHouse-Resolver"
 # 8080 is already in use on this machine, and 8443 would advertise a TLS service the
@@ -199,6 +201,60 @@ USER_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
 """
 
 
+# USER_TASK_XML above, with exactly one change: no execution time limit. The volume
+# guard is a RESIDENT loop in the user's session - a per-second poll cannot be a
+# one-shot, because a task firing every minute leaves up to a minute of full volume,
+# which is the harm the lane exists to prevent - and USER_TASK_XML's PT15M ceiling would
+# terminate it a quarter-hour after every logon. The 15-minute repetition is KEPT, and it
+# is safe to keep only because MultipleInstancesPolicy is IgnoreNew: while the loop is
+# alive each fire is a no-op, and when the loop has died the next fire resurrects it -
+# the same resurrection TASK_XML buys with RestartOnFailure for the SYSTEM watcher.
+USER_LOOP_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>{description}</Description>
+    <URI>\\{name}</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{user}</UserId>
+      <Delay>PT30S</Delay>
+      <Repetition><Interval>PT15M</Interval></Repetition>
+    </LogonTrigger>
+    <RegistrationTrigger>
+      <Enabled>true</Enabled>
+      <Repetition><Interval>PT15M</Interval></Repetition>
+    </RegistrationTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{user}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <Hidden>true</Hidden>
+    <!-- It is an infinite loop, so no execution time limit; the repetition above is
+         what brings it back if it dies. -->
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{python}</Command>
+      <Arguments>{arguments}</Arguments>
+      <WorkingDirectory>{workdir}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
 def is_admin() -> bool:
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
@@ -312,6 +368,24 @@ def register_browser_guard(*, python: Path, workdir: Path) -> bool:
     )
 
 
+def register_playgames_guard(*, python: Path, workdir: Path) -> bool:
+    """The Play Games kill lane - the same repeating one-shot as the other two.
+
+    Its idle path is even cheaper than theirs: the process walk is in-process ctypes, so
+    a run that finds nothing spawns no subprocess at all. Hence GUARD_TASK_XML and no
+    /Run - the RegistrationTrigger starts the repetition immediately.
+    """
+    return register_task(
+        name=PLAYGAMES_TASK, python=python,
+        arguments="-m safehouse_ytbudget.playgames_guard", workdir=workdir,
+        description=("SafeHouse Play Games guard - closes Google Play Games within "
+                     "about a minute of it opening (banned on this PC; the separate "
+                     "Play Games Services sign-in helper that ordinary games use is "
+                     "untouched)"),
+        start=False, xml_template=GUARD_TASK_XML,
+    )
+
+
 def register_panel(*, python: Path, workdir: Path, port: int = PANEL_PORT) -> bool:
     """The control panel - a RESIDENT service, so it takes the watcher's task shape.
 
@@ -384,6 +458,30 @@ def register_resolver(*, python: Path, workdir: Path, root: Path,
                      "they are not. Without this the DNS relay falls back to the router "
                      "and nothing is filtered, while the machine looks healthy."),
         start=True, xml_template=USER_TASK_XML,
+    )
+
+
+def register_volume_guard(*, python: Path, workdir: Path, user: str = "") -> bool:
+    """The volume ceiling - the second task in the user's session, and a RESIDENT one.
+
+    In the user's session like the resolver watchdog, because the master volume being
+    capped is the one at the child's own ears - and deliberately as the child, not
+    SYSTEM: it kills nothing and reads one number a second, so it does not need a
+    stronger token than the person whose slider it minds. USER_LOOP_TASK_XML, not
+    USER_TASK_XML, because the 15-minute execution ceiling that reaps a wedged resolver
+    run would terminate this loop mid-shift; the repetition stays as the resurrection
+    watchdog (IgnoreNew makes it a no-op while the loop is healthy). `pythonw.exe` for
+    the same reason as the resolver: a console window on the child's screen is the
+    posture giving itself away.
+    """
+    return register_task(
+        name=VOLUME_TASK, python=windowless(python),
+        arguments="-m safehouse_ytbudget.volume_guard", workdir=workdir,
+        user=user or current_interactive_user(),
+        description=("SafeHouse volume guard - keeps the master output volume at or "
+                     "below the configured ceiling (60% by default), snapping it back "
+                     "within about a second when it is dragged up."),
+        start=True, xml_template=USER_LOOP_TASK_XML,
     )
 
 
@@ -597,6 +695,17 @@ def main(argv: list[str] | None = None) -> int:
         "message": ("Browsing is off on this PC. Games still work - "
                     "ask a grown-up if you need a web page."),
     }))
+    print("    " + seed_json(args.root / "playgames-guard.json", {
+        "enabled": True,
+        "delay_min_sec": 1,
+        "delay_max_sec": 5,
+    }))
+    # 60% is the standing ceiling; max_percent: 100 or enabled: false are the parent's
+    # ways to stand the lane down.
+    print("    " + seed_json(args.root / "volume-guard.json", {
+        "enabled": True,
+        "max_percent": 60,
+    }))
 
     print("[*] Rendering config.json from .env...")
     cfg, warnings = configmod.render(args.root / "config.json", pkg_dir / ".env")
@@ -637,6 +746,14 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"[*] Registering scheduled task {BROWSER_TASK}...")
     if not register_browser_guard(python=args.python, workdir=pkg_dir):
+        return 1
+
+    print(f"[*] Registering scheduled task {PLAYGAMES_TASK}...")
+    if not register_playgames_guard(python=args.python, workdir=pkg_dir):
+        return 1
+
+    print(f"[*] Registering scheduled task {VOLUME_TASK}...")
+    if not register_volume_guard(python=args.python, workdir=pkg_dir):
         return 1
 
     if not args.no_resolver:
