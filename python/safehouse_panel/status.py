@@ -31,6 +31,11 @@ ACTIVE, OFF, DEGRADED, UNKNOWN = "ACTIVE", "OFF", "DEGRADED", "UNKNOWN"
 ROBLOX_TASK = "SafeHouse-RobloxBudget"
 BROWSER_TASK = "SafeHouse-BrowserGuard"
 PANEL_TASK = "SafeHouse-Panel"
+RESOLVER_TASK = "SafeHouse-Resolver"
+# Named here so the page prints the same domains the watchdog actually queries; the
+# probes themselves live in safehouse_setup.resolver.
+RESOLVER_PROBE = "doubleclick.net"
+CONTROL_PROBE = "github.com"
 # Every task this project registers, so the page can show the ones that are NOT running
 # too. SafeHouse-DNS is on the list because when it is not running the relay is not in
 # the path and nothing is filtered - the 2026-08-01 outage looked healthy everywhere else.
@@ -38,6 +43,7 @@ KNOWN_TASKS = (
     ROBLOX_TASK,
     BROWSER_TASK,
     PANEL_TASK,
+    RESOLVER_TASK,
     "SafeHouse-DNS",
     "SafeHouse-YouTubeBudget-Py",
     "SafeHouse-YouTubeBudget",
@@ -270,6 +276,100 @@ def browser_lane(*, config: dict, config_defects: list[str], state: dict, task: 
                  defects=list(config_defects), facts=facts, summary=log, notes=notes)
 
 
+# --- the resolver host (WSL) -------------------------------------------------
+
+def resolver_view(*, chain: dict, last_run: dict | None, task: dict, now: int) -> dict:
+    """Is the machine that does the filtering actually filtering?
+
+    This is the section that would have caught 2026-08-01. Everything blocked at the DNS
+    layer lives in two containers inside WSL; when that VM is not running the Windows
+    relay **fails open to the router**, so names resolve, browsing works, and every other
+    signal on this page stays green while nothing whatsoever is filtered.
+
+    Which is why the verdict is the FILTERING probe and nothing else. Not "port 53
+    answered" - the relay answers during the outage, that is what failing open means. Not
+    "both containers are listening" - they can be up while filtering is switched off
+    inside AdGuard. A known ad domain either comes back sinkholed or it does not, and
+    everything else on this card is there to say *why* when it does not.
+    """
+    filtering, resolves = chain.get("filtering"), chain.get("resolves")
+    adguard, pihole, vm = chain.get("adguard"), chain.get("pihole"), chain.get("vm")
+    relay = chain.get("relay")
+
+    if filtering:
+        status = ACTIVE
+        reason = (f"{RESOLVER_PROBE} comes back sinkholed, so the chain is blocking"
+                  + ("" if resolves else " - but the control name did not resolve, which "
+                                         "usually means the resolver is refusing "
+                                         "everything rather than filtering well"))
+    elif not relay:
+        status = DEGRADED
+        reason = ("nothing is answering DNS on this machine at all - not even the relay. "
+                  "This is the one failure the child would actually notice")
+    elif vm is False:
+        status = DEGRADED
+        reason = ("the WSL virtual machine is not running, so nothing is filtered - and "
+                  "the relay falls back to the router, so nothing else looks wrong")
+    else:
+        status = DEGRADED
+        reason = ("DNS is answering but NOTHING IS BEING BLOCKED. This is the failure "
+                  "that looks healthy: the relay has fallen back to the router, so "
+                  "browsing works with no filtering behind it")
+
+    facts = [
+        {"label": f"{RESOLVER_PROBE} (must be blocked)",
+         "value": "blocked" if filtering else "RESOLVED - not filtered"},
+        {"label": f"{CONTROL_PROBE} (must resolve)",
+         "value": "resolves" if resolves else "did not resolve"},
+        {"label": "AdGuard Home (tcp 3000)",
+         "value": "listening" if adguard else "no answer"},
+        {"label": "Pi-hole (tcp 5353)",
+         "value": "listening" if pihole else "no answer"},
+        {"label": "WSL virtual machine",
+         "value": "running" if vm else ("not running" if vm is False
+                                        else "could not be read")},
+    ]
+    notes = []
+    if filtering and not (adguard and pihole):
+        # Worth saying rather than hiding behind a green pill: the chain is blocking, but
+        # one of the two is missing, so part of the coverage is gone.
+        notes.append("Filtering is working, but one of the two resolvers is not "
+                     "listening. Blocking is coming from whichever is left, so part of "
+                     "the coverage - the Pi-hole gravity lists, or AdGuard's categories "
+                     "- is not in the path.")
+    if last_run:
+        did = last_run.get("action")
+        facts.append({"label": "Last watchdog run",
+                      "value": f"{last_run.get('stamp', '?')} "
+                               f"({'nothing needed doing' if did == 'none' else did})"})
+        if last_run.get("detail"):
+            notes.append(str(last_run["detail"]))
+        for step in last_run.get("steps") or []:
+            if not step.get("ok"):
+                notes.append(f"{step.get('name')}: {step.get('detail')}")
+    else:
+        notes.append("The watchdog has not written a record yet, so this is the panel's "
+                     "own probe rather than the watchdog's account of a repair.")
+
+    if task["registered"] is False:
+        status = DEGRADED if status == ACTIVE else status
+        notes.append(f"No {task['name']} task is registered, so nothing restarts the "
+                     f"chain by itself. Register it with install.py --resolver-only.")
+    elif task["registered"] and not task["enabled"]:
+        notes.append(f"{task['name']} is disabled - the chain is up now, but nothing "
+                     f"will bring it back if it stops.")
+
+    # Stated whatever the state, because it is the thing a parent will otherwise discover
+    # at the worst moment - pressing Repair from a phone while the PC sits at the lock
+    # screen and nothing happens.
+    notes.append("Repairs run in the logged-on user's session: Windows refuses to run "
+                 "WSL as LocalSystem, so nothing can start the chain while nobody is "
+                 "signed in to the PC. That is also the only time it matters.")
+    return {"key": "resolver", "label": "Filtering resolver (WSL)", "status": status,
+            "reason": reason, "facts": facts, "task": task, "notes": notes,
+            "chain": chain, "last_run": last_run}
+
+
 # --- DNS filtering -----------------------------------------------------------
 
 def dns_view(*, configured: bool, base_url: str, server: dict | None,
@@ -434,9 +534,13 @@ KNOWN_GAPS = (
         "detail": "The loopback relay fails OPEN by design - resolution keeps working "
                   "with no filtering behind it, which is why an outage looks exactly "
                   "like a healthy machine. This is the 2026-08-01 failure: fourteen "
-                  "hours unfiltered with every other signal green.",
-        "verify": "In WSL: docker ps (both containers Up) and "
-                  "systemctl list-timers safehouse-dns.timer",
+                  "hours unfiltered with every other signal green. NOW WATCHED, not "
+                  "fixed: the resolver section at the top of this page probes both "
+                  "resolvers directly, and SafeHouse-Resolver restarts them every 15 "
+                  "minutes - but only while somebody is signed in to the PC, because "
+                  "Windows will not run WSL as LocalSystem.",
+        "verify": "The 'Filtering resolver (WSL)' section on this page, or in WSL: "
+                  "docker ps (both containers Up)",
         "severity": "high",
     },
     {

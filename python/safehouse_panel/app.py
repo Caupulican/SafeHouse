@@ -42,7 +42,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from . import audit as auditmod, controls, page
-from .auth import SESSION_COOKIE, PasswordStore, Sessions, Throttle
+from .auth import (SESSION_COOKIE, PasswordStore, Sessions, Throttle,
+                   password_advice, password_problem)
 
 SAFE_HEADERS = (
     ("Cache-Control", "no-store, no-cache, must-revalidate"),
@@ -178,6 +179,8 @@ class Panel:
             return self._login(req)
         if route == ("POST", "/api/logout"):
             return self._logout(req)
+        if route == ("POST", "/api/password"):
+            return self._password(req)
         if route == ("GET", "/api/status"):
             return self._status(req)
         if route == ("POST", "/api/probe"):
@@ -235,6 +238,74 @@ class Panel:
         self.sessions.revoke(req.cookie(SESSION_COOKIE))
         return json_response(200, {"ok": True},
                              headers=[("Set-Cookie", _cookie("", max_age=0))])
+
+    def _password(self, req: Request) -> Response:
+        """Change the panel password from the page itself.
+
+        Four things guard it, and each is here for a different attack:
+
+        * a live session, so a stranger on the LAN cannot reach it at all;
+        * the **current** password, so a session left open on an unlocked phone in the
+          kitchen is not enough to lock the parent out of their own controls - this is
+          the one that matters most, because the child could be holding that phone;
+        * the cross-site check, so a page the child opens cannot post a new password
+          using the parent's cookie;
+        * the throttle, shared with the login, so this is not a softer door to guess at
+          than the front one.
+
+        On success every session is dropped - including this one - and this browser is
+        immediately given a fresh cookie. Otherwise a password changed *because* someone
+        saw it would leave the device they saw it on signed in until tomorrow.
+        """
+        denied = self._require_session(req)
+        if denied is not None:
+            return denied
+        cross = self._cross_site(req)
+        if cross is not None:
+            self._audit(auditmod.format_denied("a password change", who=req.client,
+                                               why=cross))
+            return json_response(403, {"error": f"Cross-site request refused ({cross}). "
+                                                f"The password was not changed."})
+        now = self.clock()
+        locked = self.throttle.locked_for(req.client, now)
+        if locked:
+            return json_response(429, {"error": f"Too many failed attempts. Try again in "
+                                                f"{locked // 60 + 1} minute(s)."})
+        payload = req.json()
+        current = str(payload.get("current", ""))
+        if not self.store.verify(current):
+            delay = self.throttle.record_failure(req.client, now)
+            self._audit(f"[auth] FAILED password change from {req.client} "
+                        f"(current password wrong)")
+            self.sleep(delay)
+            return json_response(401, {"error": "That is not the current password. "
+                                                "Nothing was changed."})
+        self.throttle.record_success(req.client)
+        new = str(payload.get("new", ""))
+        if new != str(payload.get("confirm", new)):
+            return json_response(400, {"error": "The two new passwords do not match. "
+                                                "Nothing was changed."})
+        problem = password_problem(new)
+        if problem:
+            return json_response(400, {"error": problem})
+        try:
+            self.store.save(new)
+        except OSError as exc:
+            self._audit(f"[error] the password could not be written: "
+                        f"{type(exc).__name__}: {exc}")
+            return json_response(500, {"error": f"Could not write the new password: "
+                                                f"{exc}"})
+        dropped = self.sessions.revoke_all()
+        token = self.sessions.create(req.client)
+        # The password itself is never logged, here or anywhere.
+        self._audit(f"[auth] the panel password was changed from {req.client}; "
+                    f"{dropped} session(s) signed out")
+        return json_response(200, {
+            "ok": True,
+            "message": ("Password changed. Every other device has been signed out."
+                        if dropped > 1 else "Password changed."),
+            "advice": password_advice(new),
+        }, headers=[("Set-Cookie", _cookie(token))])
 
     def _require_session(self, req: Request) -> Response | None:
         if self._session(req) is None:

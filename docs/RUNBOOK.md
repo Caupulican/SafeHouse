@@ -281,6 +281,37 @@ Then open `http://192.168.1.50:8787` from a phone or laptop on the house network
   `[change] <control>: before -> after (by <address>)`.
 - **Do not read it on the guarded PC.** The browser guard closes the browser you would be
   reading it in, within about a minute — that is what the unlock control is for.
+- **Changing the password** is done on the page, under *Panel access*. It asks for the
+  current one and signs every other device out. Minimum four characters; the panel warns
+  about a weak one and then accepts it, because the six-tries-then-15-minutes lockout is
+  what is actually holding the line.
+
+### Is the filtering resolver up? (the section that would have caught 2026-08-01)
+
+The top card on the panel, and the one to look at first. Its verdict is a single question:
+**does `doubleclick.net` come back sinkholed?** Not "did port 53 answer" — the Windows
+relay owns that port and answers happily during an outage, with unfiltered results. That
+is what failing open means, and it is why the outage was invisible for fourteen hours.
+
+`SafeHouse-Resolver` is the lane behind it: at logon and every 15 minutes it checks, and
+starts WSL and the containers when the chain is not filtering. It is **the only task in
+this repo that does not run as SYSTEM** — Windows refuses to run WSL as LocalSystem at all
+(`WSL_E_LOCAL_SYSTEM_NOT_SUPPORTED`), so it runs in the logged-on user's session, hidden,
+under `pythonw.exe`. Consequence worth knowing: **nothing can repair the chain while
+nobody is signed in to the PC.**
+
+```powershell
+# Arm it. Run it while signed in as the account WSL is registered to.
+C:\SafeHouse\python\python.exe .\install.py --resolver-only --distro Debian
+
+# Ask it directly, any time.
+C:\SafeHouse\python\python.exe -m safehouse_setup resolver --status
+C:\SafeHouse\python\python.exe -m safehouse_setup resolver           # repair if needed
+```
+
+A run that finds the chain filtering sends two UDP packets and exits without spawning
+anything, which is what makes a 15-minute schedule acceptable on a gaming PC. What it last
+did is in `C:\ProgramData\SafeHouse\resolver.json`.
 
 ## Blocklists auto-update (weekly)
 `scripts/auto-update.sh` re-applies the repo blocklists and rebuilds gravity so every adlist's
@@ -343,7 +374,9 @@ restarts the containers is what let a fourteen-hour outage go unnoticed on 2026-
    on the router instead of the filter.
 2. **WSL side.** The `safehouse-dns.timer` watchdog runs `reconcile-dns.sh` 15s after boot
    and every 5 minutes after that, which is what actually brings Pi-hole and AdGuard Home
-   back. A normal `deploy.sh --with-adguard` installs it automatically; use
+   back — **while the VM is running.** It cannot start the VM it lives inside, which is
+   the gap `SafeHouse-Resolver` on the Windows side now covers (at logon, then every 15
+   minutes, in the logged-on user's session). A normal `deploy.sh --with-adguard` installs it automatically; use
    `./scripts/install-dns-service.sh` directly only to repair its systemd units.
 
    Do not rely on `restart: unless-stopped` alone. It is set on both containers and it is

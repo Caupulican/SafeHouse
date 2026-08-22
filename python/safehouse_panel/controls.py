@@ -382,6 +382,44 @@ def set_youtube_blocked(root: Path, value: object, *, now: int, client=None) -> 
                    before=was, after=now_state)
 
 
+# --- the filtering resolver --------------------------------------------------
+
+def start_resolver(root: Path, value: object, *, now: int, collector=None) -> Outcome:
+    """Ask the resolver watchdog to run now.
+
+    The panel cannot do this itself. It runs as LocalSystem and Windows refuses to run
+    WSL there at all (`WSL_E_LOCAL_SYSTEM_NOT_SUPPORTED`) - not a permissions problem, but
+    a missing distro registration, since distros live in the user's own registry hive. So
+    the work belongs to `SafeHouse-Resolver`, which runs in the logged-on user's session,
+    and this only presses its button.
+
+    Which means the honest answer here is "asked", not "done": `schtasks /Run` returns as
+    soon as the scheduler accepts, while starting a cold distro and reconciling two
+    container stacks takes tens of seconds. The page's own 10-second poll shows when the
+    resolvers actually start answering, and the message says so rather than reporting a
+    success nobody has verified.
+    """
+    if collector is None:
+        return Outcome(False, "The resolver watchdog cannot be reached from here.")
+    result = collector.start_resolver()
+    if not result.get("ok"):
+        detail = result.get("detail") or "the scheduler refused the request"
+        return Outcome(False,
+                       f"Could not start {RESOLVER_TASK}: {detail} "
+                       f"Two things cause this: the task is not registered "
+                       f"(install.py --resolver-only), or nobody is signed in to the PC - "
+                       f"WSL cannot be started without a user session.")
+    return Outcome(True,
+                   "Asked the resolver watchdog to run. Starting WSL and both containers "
+                   "takes up to a minute; this page will show them answering when they "
+                   "do. If it still says down after a minute, nobody is signed in to the "
+                   "PC or WSL itself is refusing to start.",
+                   before="asked", after="asked")
+
+
+RESOLVER_TASK = "SafeHouse-Resolver"
+
+
 ACTIONS = {
     "roblox_limit_min": set_roblox_limit,
     "roblox_bonus_min": set_roblox_bonus,
@@ -392,6 +430,7 @@ ACTIONS = {
     "roblox_delay_sec": set_roblox_delay,
     "browser_delay_sec": set_browser_delay,
     "youtube_blocked": set_youtube_blocked,
+    "resolver_start": start_resolver,
 }
 
 
@@ -471,7 +510,8 @@ def _weakens(action: str, new: object, current: dict) -> bool:
         except (TypeError, ValueError, IndexError):
             return True
         return coerce_int(new.get("max_sec"), field="maximum") > was
-    # browser_notify changes what the CHILD is told, not what is enforced.
+    # browser_notify changes what the CHILD is told, not what is enforced, and
+    # resolver_start only ever turns filtering back ON.
     return False
 
 

@@ -32,6 +32,7 @@ SHADOW_TASK = "SafeHouse-YouTubeBudget-PyShadow"
 ROBLOX_TASK = "SafeHouse-RobloxBudget"
 BROWSER_TASK = "SafeHouse-BrowserGuard"
 PANEL_TASK = "SafeHouse-Panel"
+RESOLVER_TASK = "SafeHouse-Resolver"
 # 8080 is already in use on this machine, and 8443 would advertise a TLS service the
 # panel does not serve. 8787 was free.
 PANEL_PORT = 8787
@@ -131,6 +132,73 @@ GUARD_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
 """
 
 
+# A task that runs in the LOGGED-ON USER'S session, not as SYSTEM. Exactly one thing
+# needs this shape and the reason is absolute: **Windows refuses to run WSL as
+# LocalSystem.**
+#
+#     A execucao do WSL como sistema local nao e suportada.
+#     Wsl/WSL_E_LOCAL_SYSTEM_NOT_SUPPORTED
+#
+# Verified on this machine by running `wsl.exe --list` from a SYSTEM task. It is not a
+# permissions problem a stronger token fixes - distro registration lives in the user's
+# own registry hive, so SYSTEM has no distros to run. Every other task here is SYSTEM
+# because it writes ProgramData; this one is a user because it must talk to WSL, and it
+# gets HighestAvailable so it can still write `resolver.json` into that ACL.
+#
+# `pythonw.exe`, never `python.exe`: this fires every fifteen minutes on the machine the
+# child is using, and a console window blinking on his screen four times an hour is the
+# whole enforcement posture giving itself away. Everything it spawns goes through
+# `winutil.run`, which passes CREATE_NO_WINDOW for the same reason.
+#
+# The logon trigger is what makes it self-healing: WSL is not running before anyone logs
+# on, and there is nothing to filter then either.
+USER_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>{description}</Description>
+    <URI>\\{name}</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{user}</UserId>
+      <Delay>PT30S</Delay>
+      <Repetition><Interval>PT15M</Interval></Repetition>
+    </LogonTrigger>
+    <RegistrationTrigger>
+      <Enabled>true</Enabled>
+      <Repetition><Interval>PT15M</Interval></Repetition>
+    </RegistrationTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{user}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <Hidden>true</Hidden>
+    <!-- The reconcile can pull container images, so the ceiling is generous. A run that
+         finds both resolvers answering sends two UDP packets and exits, spawning
+         nothing. -->
+    <ExecutionTimeLimit>PT15M</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{python}</Command>
+      <Arguments>{arguments}</Arguments>
+      <WorkingDirectory>{workdir}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
 def is_admin() -> bool:
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
@@ -175,7 +243,8 @@ def add_av_exclusions(paths: list[Path]) -> None:
 
 
 def register_task(*, name: str, python: Path, arguments: str, workdir: Path,
-                  description: str, start: bool, xml_template: str = TASK_XML) -> bool:
+                  description: str, start: bool, xml_template: str = TASK_XML,
+                  user: str = "") -> bool:
     # Every value is XML-escaped, not just the prose one. These land inside elements of
     # a document `schtasks /XML` parses strictly, and it rejects the whole file for one
     # stray character: a `<` in a description registered nothing and reported only
@@ -184,7 +253,7 @@ def register_task(*, name: str, python: Path, arguments: str, workdir: Path,
     esc = escape
     xml = xml_template.format(
         name=esc(name), description=esc(description), python=esc(str(python)),
-        arguments=esc(arguments), workdir=esc(str(workdir)),
+        arguments=esc(arguments), workdir=esc(str(workdir)), user=esc(user),
     )
     # schtasks /XML insists on a UTF-16 file with a BOM.
     tmp = workdir / f".{name}.xml"
@@ -264,6 +333,57 @@ def register_panel(*, python: Path, workdir: Path, port: int = PANEL_PORT) -> bo
                      f"served on TCP {port} to the house LAN only. Password required; "
                      "no TLS, so the login crosses the LAN in clear."),
         start=True,
+    )
+
+
+def windowless(python: Path) -> Path:
+    """`pythonw.exe` beside the given interpreter, or the interpreter itself.
+
+    Falling back rather than failing: a resolver lane that runs with a visible console is
+    worse than one that does not run at all is *not* true here - a chain that is down
+    filters nothing - so a missing pythonw.exe degrades to a brief console instead of to
+    no repair. The embeddable distribution ships both, so this practically never fires.
+    """
+    candidate = python.with_name("pythonw.exe")
+    return candidate if candidate.exists() else python
+
+
+def current_interactive_user() -> str:
+    """`DOMAIN\\user` for the account registering this, which is the account that owns
+    the WSL distro. The installer is run by the parent while signed in as the child's
+    account, which is the same account WSL is registered under - and `SafeHouse-DNS`
+    already relies on exactly this."""
+    import os
+
+    domain = os.environ.get("USERDOMAIN") or os.environ.get("COMPUTERNAME") or ""
+    user = os.environ.get("USERNAME") or ""
+    return f"{domain}\\{user}" if domain and user else user
+
+
+def register_resolver(*, python: Path, workdir: Path, root: Path,
+                      user: str = "", distro: str | None = None) -> bool:
+    """The lane that keeps the filtering chain alive - the only task NOT run as SYSTEM.
+
+    Every DNS-layer block this project makes lives in two containers inside WSL, and when
+    WSL is not running the Windows relay fails OPEN to the router: names resolve, browsing
+    works, and nothing looks wrong while nothing at all is filtered. That is the
+    2026-08-01 outage, fourteen hours long, found by accident.
+
+    It cannot be a SYSTEM task like the others because Windows refuses to run WSL as
+    LocalSystem outright (WSL_E_LOCAL_SYSTEM_NOT_SUPPORTED, verified on this machine), so
+    it runs in the logged-on user's session - which is also exactly when filtering
+    matters. A run that finds both resolvers answering sends two UDP packets and exits.
+    """
+    arguments = (f"-m safehouse_setup resolver --trigger schedule --root \"{root}\""
+                 + (f" --distro {distro}" if distro else ""))
+    return register_task(
+        name=RESOLVER_TASK, python=windowless(python), arguments=arguments,
+        workdir=workdir, user=user or current_interactive_user(),
+        description=("SafeHouse resolver watchdog - checks every 15 minutes that AdGuard "
+                     "Home and Pi-hole are answering inside WSL, and starts them when "
+                     "they are not. Without this the DNS relay falls back to the router "
+                     "and nothing is filtered, while the machine looks healthy."),
+        start=True, xml_template=USER_TASK_XML,
     )
 
 
@@ -404,6 +524,13 @@ def main(argv: list[str] | None = None) -> int:
                    help=f"port the control panel listens on (default {PANEL_PORT})")
     p.add_argument("--no-panel", action="store_true",
                    help="do not register the control panel task")
+    p.add_argument("--resolver-only", action="store_true",
+                   help="register only the resolver watchdog task; touches nothing else")
+    p.add_argument("--resolver-user", default=None,
+                   help="account the resolver watchdog runs as (default: the account "
+                        "running this installer, which is the one WSL is registered to)")
+    p.add_argument("--no-resolver", action="store_true",
+                   help="do not register the resolver watchdog task")
     args = p.parse_args(argv)
 
     if not is_admin():
@@ -423,6 +550,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.browser_guard_only:
         print(f"[*] Registering scheduled task {BROWSER_TASK}...")
         return 0 if register_browser_guard(python=args.python, workdir=pkg_dir) else 1
+
+    if args.resolver_only:
+        print(f"[*] Registering scheduled task {RESOLVER_TASK}...")
+        return 0 if register_resolver(python=args.python, workdir=pkg_dir,
+                                      root=args.root, user=args.resolver_user or "",
+                                      distro=args.distro) else 1
 
     if args.panel_only:
         print(f"[*] Registering scheduled task {PANEL_TASK}...")
@@ -505,6 +638,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[*] Registering scheduled task {BROWSER_TASK}...")
     if not register_browser_guard(python=args.python, workdir=pkg_dir):
         return 1
+
+    if not args.no_resolver:
+        print(f"[*] Registering scheduled task {RESOLVER_TASK}...")
+        if not register_resolver(python=args.python, workdir=pkg_dir, root=args.root,
+                                 user=args.resolver_user or "", distro=args.distro):
+            return 1
 
     if not args.no_panel:
         print(f"[*] Registering scheduled task {PANEL_TASK}...")

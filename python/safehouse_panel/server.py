@@ -42,7 +42,8 @@ from pathlib import Path
 from . import DEFAULT_PORT, DEFAULT_ROOT
 from .app import SAFE_HEADERS, Panel, Request, Response
 from .audit import audit
-from .auth import PasswordStore, _restrict_to_admins, generate_password
+from .auth import (MIN_PASSWORD_LEN, PasswordStore, _restrict_to_admins,
+                   generate_password, password_advice, password_problem)
 from .collect import Collector, read_panel_config
 
 MAX_BODY = 64 * 1024
@@ -277,10 +278,13 @@ def set_password(root: Path, *, generate: bool, from_stdin: bool) -> int:
             print(f"Could not write {handout}: {exc}", file=sys.stderr)
             return 1
     elif from_stdin:
-        password = sys.stdin.readline().strip()
-        if len(password) < 8:
-            print("Too short: use at least 8 characters. The password was not changed.",
-                  file=sys.stderr)
+        # Not `.strip()`: a password may legitimately start or end with a space, and
+        # silently changing what was piped in produces a panel nobody can sign in to with
+        # the password they think they set. Only the line ending goes.
+        password = sys.stdin.readline().rstrip("\r\n")
+        problem = password_problem(password)
+        if problem:
+            print(problem, file=sys.stderr)
             return 1
     else:
         import getpass
@@ -295,9 +299,9 @@ def set_password(root: Path, *, generate: bool, from_stdin: bool) -> int:
         if password != again:
             print("Those do not match. The password was not changed.", file=sys.stderr)
             return 1
-        if len(password) < 8:
-            print("Too short: use at least 8 characters. The password was not changed.",
-                  file=sys.stderr)
+        problem = password_problem(password)
+        if problem:
+            print(problem, file=sys.stderr)
             return 1
     store.save(password)
     # The password itself is never logged. Where to find it is.
@@ -305,6 +309,13 @@ def set_password(root: Path, *, generate: bool, from_stdin: bool) -> int:
         f"; the new password was written to {PASSWORD_HANDOFF} - "
         f"store it and delete that file" if handout else ""))
     _echo(f"Saved (as a hash only) in {store.path}.")
+    advice = password_advice(password)
+    if advice:
+        # Said once, plainly, and not enforced. Refusing the parent's own choice of
+        # password just moves it onto a note beside the keyboard.
+        _echo("")
+        _echo(f"NOTE: {advice}")
+        _echo("You can change it from the panel itself under Settings, once signed in.")
     if handout:
         _echo(f"The password itself is in {handout}. Store it, then delete that file.")
     _echo("Sessions already signed in stay signed in until the panel restarts.")
@@ -349,7 +360,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="set-password: generate one and write it to "
                              f"{PASSWORD_HANDOFF} in the SafeHouse root")
     parser.add_argument("--stdin", action="store_true",
-                        help="set-password: read the new password from stdin (headless)")
+                        help=f"set-password: read the new password from stdin "
+                             f"(headless); minimum {MIN_PASSWORD_LEN} characters")
     return parser
 
 

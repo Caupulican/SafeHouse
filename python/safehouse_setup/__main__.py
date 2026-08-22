@@ -9,6 +9,8 @@
     python -m safehouse_setup toggle youtube --block
     python -m safehouse_setup toggle youtube --allow
     python -m safehouse_setup toggle youtube         # status
+    python -m safehouse_setup resolver --status      # is the WSL filtering chain up?
+    python -m safehouse_setup resolver               # bring it back if it is not
 
 One entry point owns host configuration, so there is one thing to learn and one place
 for error handling.
@@ -22,11 +24,12 @@ import sys
 import time
 from pathlib import Path
 
-from . import browser, dns, dns_proxy, toggle
+from . import browser, dns, dns_proxy, resolver, toggle
 from .migration import retire_legacy_runtime
 from .winutil import is_admin, powershell, wsl_ip
 
 LOGON_TASK = "SafeHouse-DNS"
+RESOLVER_ROOT = Path(r"C:\ProgramData\SafeHouse")
 
 
 def windowless_python(executable: Path | None = None) -> Path:
@@ -186,6 +189,34 @@ def cmd_browser(args) -> int:
     return 0 if all(results.values()) else 1
 
 
+def cmd_resolver(args) -> int:
+    """Is the WSL filtering chain answering, and bring it back when it is not.
+
+    This is the command behind the `SafeHouse-Resolver` task and behind the panel's
+    *Repair now* button. It runs in the logged-on user's session because Windows refuses
+    to run WSL as LocalSystem at all (`WSL_E_LOCAL_SYSTEM_NOT_SUPPORTED`), which is why
+    the panel triggers the task rather than doing this itself.
+    """
+    if args.status:
+        print(json.dumps({"chain": resolver.chain_state(),
+                          "last_run": resolver.read_status(args.root)}, indent=2))
+        return 0 if resolver.chain_state()["up"] else 1
+    record = resolver.ensure(args.root, distro=args.distro,
+                             trigger=args.trigger, force=args.force)
+    print(json.dumps(record, indent=2))
+    if record["ok"]:
+        return 0
+    # Loud, because the failure mode is silent by construction: the relay falls back to
+    # the router and the machine looks completely healthy with nothing being filtered.
+    print("\n" + "!" * 70
+          + "\n!! THE FILTERING CHAIN IS DOWN AND COULD NOT BE STARTED."
+          + "\n!! Nothing is blocked right now: not ads, not the parental categories,"
+          + "\n!! not YouTube. Resolution still works, so nothing else will look wrong."
+          + "\n!! In WSL:  docker ps   and   ~/.local/bin/safehouse-reconcile-dns\n"
+          + "!" * 70, file=sys.stderr)
+    return 1
+
+
 def cmd_toggle(args) -> int:
     """Report both lanes always.
 
@@ -246,6 +277,19 @@ def main(argv: list[str] | None = None) -> int:
     p_browser = sub.add_parser("browser", help="close Opera GX's VPN and DoH")
     p_browser.add_argument("--status", action="store_true")
     p_browser.set_defaults(func=cmd_browser)
+
+    p_resolver = sub.add_parser(
+        "resolver", help="check the WSL filtering chain, and start it if it is down")
+    p_resolver.add_argument("--status", action="store_true",
+                            help="report only; start nothing")
+    p_resolver.add_argument("--root", type=Path, default=RESOLVER_ROOT)
+    p_resolver.add_argument("--distro", default=None,
+                            help="WSL distro to start (default: the default distro)")
+    p_resolver.add_argument("--force", action="store_true",
+                            help="reconcile even when the chain is already answering")
+    p_resolver.add_argument("--trigger", default="manual",
+                            help=argparse.SUPPRESS)
+    p_resolver.set_defaults(func=cmd_resolver)
 
     p_toggle = sub.add_parser("toggle", help="manual hosts block by name")
     p_toggle.add_argument("name", nargs="?", default="youtube")

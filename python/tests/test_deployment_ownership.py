@@ -95,3 +95,68 @@ def test_task_xml_escapes_every_interpolated_value(tmp_path, monkeypatch):
     # And the result must still parse, which is the property that actually failed.
     import xml.etree.ElementTree as ET
     ET.fromstring(xml)
+
+
+# --- the resolver watchdog's task shape --------------------------------------
+# Every other task this repo registers runs as SYSTEM. This one cannot, and the reason is
+# absolute rather than a preference: Windows refuses to run WSL as LocalSystem at all
+# (Wsl/WSL_E_LOCAL_SYSTEM_NOT_SUPPORTED, verified on the live machine by running
+# `wsl.exe --list` from a SYSTEM task). A well-meaning future edit that "makes it
+# consistent with the others" would silently break the only lane that repairs filtering.
+
+def test_the_resolver_task_runs_as_a_user_and_never_as_system(tmp_path, monkeypatch):
+    import install as installmod
+    import xml.etree.ElementTree as ET
+
+    captured = {}
+
+    def fake_run(args):
+        if args[:2] == ["schtasks", "/Create"]:
+            captured["xml"] = Path(args[args.index("/XML") + 1]).read_text(encoding="utf-16")
+        return 0, ""
+
+    monkeypatch.setattr(installmod, "run", fake_run)
+    assert installmod.register_resolver(
+        python=tmp_path / "python.exe", workdir=tmp_path,
+        root=Path(r"C:\ProgramData\SafeHouse"), user="DESKTOP-ABC\\child",
+        distro="Debian")
+
+    doc = captured["xml"]
+    assert "S-1-5-18" not in doc, "the resolver task must not run as LocalSystem"
+    assert "InteractiveToken" in doc
+    tree = ET.fromstring(doc)
+    ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+    principal = tree.find(".//t:Principals/t:Principal", ns)
+    # The account on this machine is accented, and the XML is written UTF-16.
+    assert principal.find("t:UserId", ns).text == "DESKTOP-ABC\\child"
+    # Hidden, because it fires four times an hour on the machine the child is using.
+    assert tree.find(".//t:Settings/t:Hidden", ns).text == "true"
+    # A logon trigger, because there is no user session to run in before one.
+    assert tree.find(".//t:Triggers/t:LogonTrigger", ns) is not None
+
+
+def test_the_resolver_task_uses_the_windowless_interpreter(tmp_path, monkeypatch):
+    """A console window blinking on the child's screen four times an hour gives the whole
+    posture away."""
+    import install as installmod
+
+    (tmp_path / "pythonw.exe").write_text("")
+    captured = {}
+
+    def fake_run(args):
+        if args[:2] == ["schtasks", "/Create"]:
+            captured["xml"] = Path(args[args.index("/XML") + 1]).read_text(encoding="utf-16")
+        return 0, ""
+
+    monkeypatch.setattr(installmod, "run", fake_run)
+    installmod.register_resolver(python=tmp_path / "python.exe", workdir=tmp_path,
+                                 root=tmp_path, user="DESKTOP-ABC\\u")
+    assert "pythonw.exe" in captured["xml"]
+
+
+def test_a_missing_pythonw_degrades_rather_than_refusing(tmp_path):
+    import install as installmod
+
+    assert installmod.windowless(tmp_path / "python.exe").name == "python.exe"
+    (tmp_path / "pythonw.exe").write_text("")
+    assert installmod.windowless(tmp_path / "python.exe").name == "pythonw.exe"

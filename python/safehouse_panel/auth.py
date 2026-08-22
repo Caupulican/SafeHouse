@@ -38,6 +38,15 @@ DKLEN = 32
 # Fallback if a build of Python has no scrypt (it needs OpenSSL). pbkdf2 is always there.
 PBKDF2_ROUNDS = 600_000
 
+# The floor, not a recommendation. It is 4 rather than 8 because the parent asked for a
+# short PIN they can type one-handed on a phone, and a rule that stops them setting the
+# password they want just moves the password onto a sticky note. What the floor does buy
+# is that the throttle below has something to do: at six failures the source is locked out
+# for fifteen minutes, so even a 4-digit PIN is not brute-forceable over the LAN in an
+# afternoon. `password_advice` says out loud when a password is weak instead of refusing
+# it - the honest split between "this is a bad idea" and "you may not".
+MIN_PASSWORD_LEN = 4
+
 SESSION_COOKIE = "safehouse_panel"
 # Sliding: touched on every authenticated request. A phone left on the kitchen table
 # stops being a way in some hours after it was last used.
@@ -110,6 +119,36 @@ def generate_password(words: int = 4) -> str:
     return "-".join(
         "".join(secrets.choice(alphabet) for _ in range(4)) for _ in range(max(2, words))
     )
+
+
+def password_problem(password: str) -> str | None:
+    """A reason to REFUSE this password outright, or None. Deliberately almost nothing."""
+    if not isinstance(password, str) or not password.strip():
+        return "The password cannot be blank."
+    if len(password) < MIN_PASSWORD_LEN:
+        return (f"Use at least {MIN_PASSWORD_LEN} characters. "
+                f"The password was not changed.")
+    return None
+
+
+def password_advice(password: str) -> str:
+    """A warning to SHOW alongside a password that was accepted, or "".
+
+    This exists because the panel can switch off every protection in the house, the child
+    has local admin on the machine it runs on, and there is no TLS on the login. A parent
+    is entitled to choose a weak password anyway - it is their house - but they are also
+    entitled to be told once, plainly, rather than discovering the reasoning later.
+    """
+    if password.isdigit():
+        return ("This password is digits only, so it is one of the first things anyone "
+                "guesses. The panel locks a device out for 15 minutes after 6 wrong "
+                "tries, which is what is holding the line here - and the child has "
+                "administrator on this PC, so he can read the panel's own log.")
+    if len(password) < 8:
+        return ("Short passwords lean entirely on the lockout after 6 wrong tries. "
+                "Eight characters or more is a real step up and you only type it once "
+                "per device.")
+    return ""
 
 
 class PasswordStore:
@@ -208,6 +247,18 @@ class Sessions:
     def revoke(self, token: str | None) -> None:
         if token:
             self._sessions.pop(token, None)
+
+    def revoke_all(self) -> int:
+        """Drop every session. Used when the password changes.
+
+        Changing a password because somebody saw it is worth nothing if the phone they
+        saw it on stays signed in for another day. So every session goes, including the
+        one doing the changing - `app.py` immediately issues that browser a fresh one, so
+        the parent is not logged out of the page they are standing in.
+        """
+        count = len(self._sessions)
+        self._sessions.clear()
+        return count
 
     def count(self) -> int:
         self._sweep(self._clock())

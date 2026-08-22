@@ -21,12 +21,16 @@ at any hour, so it comes up at boot and is restarted if it dies.
 cd C:\SafeHouse\windows\youtube-budget
 C:\SafeHouse\python\python.exe .\install.py --panel-only
 
+# The resolver watchdog, which keeps the filtering chain alive. Elevated, and run
+# WHILE SIGNED IN AS THE ACCOUNT WSL IS REGISTERED TO - it runs as that user.
+C:\SafeHouse\python\python.exe .\install.py --resolver-only --distro Debian
+
 # Set the password (see below). Elevated, on that machine.
 C:\SafeHouse\python\python.exe -m safehouse_panel set-password --generate
 ```
 
-A full `install.py` run registers it too; `--no-panel` skips it, and `--panel-port N`
-moves it.
+A full `install.py` run registers both; `--no-panel` / `--no-resolver` skip them, and
+`--panel-port N` moves the port.
 
 | | |
 |---|---|
@@ -65,16 +69,47 @@ N minutes" control) — otherwise the guard closes the window you are reading it
 There is no password until you set one. Until then the panel serves only an instructions
 page: no dashboard, no controls, no login.
 
-`set-password --generate` invents one and writes it to
-**`C:\ProgramData\SafeHouse\panel-password.txt`**, which inherits the directory's ACL
-(SYSTEM + Administrators). It is written to a file rather than printed because nothing may
-be displayed on that machine and the task has no console to print to.
+Three ways to set it, none of which put it on that machine's screen:
+
+```powershell
+# Pick one yourself, from a pipe. The minimum is 4 characters.
+'your-password' | C:\SafeHouse\python\python.exe -m safehouse_panel set-password --stdin
+
+# Or have one invented for you.
+C:\SafeHouse\python\python.exe -m safehouse_panel set-password --generate
+```
+
+`--generate` writes it to **`C:\ProgramData\SafeHouse\panel-password.txt`**, which
+inherits the directory's ACL (SYSTEM + Administrators), because nothing may be displayed on
+that machine and the task has no console to print to.
 
 > Copy the password into your password manager and **delete `panel-password.txt`.** The
 > panel keeps only a scrypt hash; that file is the only copy of the password itself.
 
-Re-running `set-password` replaces it. Sessions already signed in stay signed in until the
-panel restarts.
+**Changing it afterwards** is done from the panel, under **Panel access**. It asks for the
+current password — a session left open on an unlocked phone must not be enough to lock you
+out of your own controls — and on success it **signs every other device out**, including
+any phone still holding a session. The browser doing the change is issued a fresh cookie in
+the same response, so you are not thrown out of the page you are standing in.
+
+#### On short passwords
+
+The floor is **four characters**, not eight, deliberately. A rule that stops a parent
+setting the password they actually want just moves that password onto a note beside the
+keyboard. What holds the line instead is the **lockout: six wrong tries from one address
+and that address waits fifteen minutes**, with a doubling stall before that. A four-digit
+PIN is not brute-forceable over a house LAN against that.
+
+The panel says so once, plainly, when you set a weak one — and then accepts it. Worth
+knowing what a short password is leaning on here:
+
+* there is **no TLS**, so the login crosses the LAN in clear;
+* the child has **local administrator** on the machine the panel runs on, so he can read
+  `panel.log` — which records logins and changes, though never the password itself;
+* anything that *weakens* a protection asks for the password again, so a guessed password
+  is a working off-switch for every control on the page.
+
+Eight characters or more is a real step up and you type it once per device.
 
 ### Give it a fixed address
 
@@ -88,6 +123,23 @@ parent's phone breaks, and that looks exactly like the panel being down.
 ```json
 { "port": 8787, "bind": "192.168.1.50", "probes": { "adult": "some-nsfw-domain.example" } }
 ```
+
+---
+
+### Reading it on a phone
+
+The layout is built at 360px and allowed to grow, because that is where it is actually
+read. Three things carry it:
+
+* every grid track is `minmax(min(WIDTH, 100%), 1fr)` — a bare `minmax(280px, 1fr)` does
+  not shrink below 280px, so on a narrow phone the cards pushed the page sideways;
+* **tables fold into cards under 720px**, each cell carrying its column name in
+  `data-label`, so a five-column task table stays readable instead of turning into a
+  horizontal scrollbar that hides the column you wanted;
+* a slider gets its own full-width row with its value in the card heading, rather than
+  three controls fighting over one flex row.
+
+Buttons and fields are 40–42px tall. It follows the phone's light/dark setting.
 
 ---
 
@@ -160,25 +212,93 @@ DEGRADED — nothing is enforcing it, which is a fault, not a setting. A lane wh
 exists but is disabled is OFF. Collapsing those three into one word is how a dashboard ends
 up reassuring somebody about a protection that has not run in a month.
 
-1. **Enforcement lanes** — Roblox and web browsing: task state and last result, the budget,
+0. **Right now** — one chip per lane at the top: Roblox, browsing, the resolver, DNS
+   filtering, YouTube and the panel itself, each with its status word and one line of
+   reason. It is the whole page in six lines, which is what a phone screen has room for.
+1. **Filtering resolver (WSL)** — see below. The section that would have caught the
+   2026-08-01 outage.
+2. **Enforcement lanes** — Roblox and web browsing: task state and last result, the budget,
    minutes used today, any bonus or unlock in force, how many closes happened today, and
    when the lane last acted. A third lane for the Play Games VM is planned; the page renders
    whatever list it is given, so adding it is one entry.
-2. **Scheduled tasks** — every `SafeHouse-*` task, including the ones that are *missing*.
+3. **Scheduled tasks** — every `SafeHouse-*` task, including the ones that are *missing*.
    `SafeHouse-DNS` matters most: when it is not running the relay is not in the path and
    nothing is filtered.
-3. **DNS filtering** — from AdGuard's own API: reachable, protection, filtering, every
+4. **DNS filtering** — from AdGuard's own API: reachable, protection, filtering, every
    filter list with rule count and last-updated, the allowlists, user-rule count, parental
    control, Safe Browsing, safe search per engine, and whether Pi-hole answers on 5353.
    YouTube is shown as **two independent lanes** — the user rules (which this panel drives)
    and `blocked_services` (which the watch-time budget and `toggle youtube` drive).
-4. **Live verification** — resolves an ad domain, YouTube, an adult domain and a control
+5. **Live verification** — resolves an ad domain, YouTube, an adult domain and a control
    that must resolve, then reads AdGuard's verdict. On demand, not on the 10s refresh.
-5. **Browser policy** — per HKLM key: `DnsOverHttpsMode`, `ProxyMode`,
+6. **Browser policy** — per HKLM key: `DnsOverHttpsMode`, `ProxyMode`,
    `BuiltInDnsClientEnabled`, `IncognitoModeAvailability`, `StartupBoostEnabled`,
    `BackgroundModeEnabled`, `URLBlocklist`, the uBO forcelist. Per key, because Opera reads
    the unspaced `OperaSoftware` key and writing the spaced one succeeds and does nothing.
-6. **Known gaps** — shown, not hidden, and labelled as accepted rather than as errors.
+7. **Known gaps** — shown, not hidden, and labelled as accepted rather than as errors.
+
+### The filtering resolver, and why "it answered" proves nothing
+
+Everything this project blocks at the DNS layer lives in two Docker containers inside WSL.
+When that VM is not running, **the Windows relay fails open to the router by design**:
+names resolve, browsing works, and nothing on the machine looks wrong. That is the
+2026-08-01 outage — fourteen hours with no filtering at all and every other signal green.
+
+So the verdict on this card is **one thing only: does `doubleclick.net` come back
+sinkholed?** Deliberately not any of the readings that look like they would do:
+
+| Reading | Why it is not the verdict |
+|---|---|
+| `127.0.0.1:53` answers | The relay owns that port and answers *during* the outage. |
+| `github.com` resolves | Same. Resolution working is what failing open means. |
+| Both containers listening | They can be up with filtering switched off inside AdGuard. |
+| `vmmemWSL` is running | The VM can be up with the containers stopped. |
+
+Those four are all shown, because when the verdict is red they are how you tell *which*
+thing broke. They just do not get a vote.
+
+Two Windows-specific traps are baked into how those readings are taken, both found by
+measuring rather than assuming:
+
+* **UDP to `127.0.0.1:5353` is not forwarded into WSL.** Only the relay listens on UDP 53;
+  Pi-hole answers over WSL2's TCP localhost forwarding but not UDP, so a UDP probe reports
+  a perfectly healthy Pi-hole as dead. Pi-hole and AdGuard are checked with a TCP connect.
+* **Windows will not run WSL as LocalSystem at all** — `WSL_E_LOCAL_SYSTEM_NOT_SUPPORTED`,
+  and it is not a permissions problem: distro registration lives in the user's own registry
+  hive, so SYSTEM has no distros. The panel runs as SYSTEM, so it can *read* all of the
+  above (sockets and `tasklist`) but cannot start anything.
+
+#### Starting it again
+
+`SafeHouse-Resolver` is the only task in this repo that does **not** run as SYSTEM. It runs
+in the logged-on user's session, hidden, under `pythonw.exe` so no console ever appears,
+and it:
+
+* fires at logon and every **15 minutes** after;
+* sends two UDP packets and **exits without spawning anything** when the chain is
+  filtering — which is what makes a 15-minute schedule acceptable on a gaming PC;
+* otherwise starts the distro (`wsl.exe -e true`, which boots systemd → dockerd → both
+  containers via `restart: unless-stopped`), and only if that was not enough runs
+  `safehouse-reconcile-dns`;
+* writes what it did to `C:\ProgramData\SafeHouse\resolver.json`, which is how the panel
+  learns about a repair it could not perform itself.
+
+The panel's **Start it now** button triggers that task with `schtasks /Run`. It reports
+*asked*, not *done* — bringing a cold distro up and reconciling two container stacks takes
+tens of seconds, and the page's own 10-second poll is what shows it come back.
+
+> **It only works while somebody is signed in to the PC.** There is no user session to run
+> WSL in otherwise. That is also the only time filtering matters, but it does mean pressing
+> the button from a phone while the PC sits at the lock screen will do nothing — so the
+> card says this whatever its colour, rather than letting you find out at the worst moment.
+
+Run it by hand with:
+
+```powershell
+C:\SafeHouse\python\python.exe -m safehouse_setup resolver --status   # report only
+C:\SafeHouse\python\python.exe -m safehouse_setup resolver            # repair if needed
+C:\SafeHouse\python\python.exe -m safehouse_setup resolver --force    # reconcile regardless
+```
 
 ### Why the verdict is the query log's `reason`, never the IP
 
@@ -207,6 +327,8 @@ list and does not carry adult domain literals. Put one in `panel.json` under
 | Tell the child when a browser closes | — | `browser-guard.json` → `notify` | no |
 | Kill delay, per lane | 1–60s | `delay_min_sec` / `delay_max_sec` | if raised |
 | YouTube at the resolver | — | AdGuard user rules | if allowed |
+| Start the filtering resolver | — | triggers `SafeHouse-Resolver` | no — it only restores filtering |
+| Change the panel password | ≥4 chars | `panel-auth.json` (hash only) | needs the **current** password |
 
 Every write is atomic (`atomicio.write_json`, the same rename-based write the guards use)
 and read-modify-write, so a hand-edited `message` or `users` survives a slider being moved.
@@ -302,6 +424,28 @@ UNKNOWN is deliberately not OFF: it means the reading failed, not that the prote
 against the file itself. The guards read their config on every run (once a minute), so a
 change applies within a minute without restarting anything.
 
+**The resolver card is red and "Start it now" does nothing.** In order:
+
+1. **Is anyone signed in to the PC?** Nothing can start WSL otherwise — Windows will not
+   run it as LocalSystem. This is the common answer.
+2. Is the task there? `schtasks /Query /TN SafeHouse-Resolver /V /FO LIST`. If not:
+   `install.py --resolver-only`, run while signed in as the account WSL belongs to.
+3. What did it last do? `type C:\ProgramData\SafeHouse\resolver.json` — it records the
+   steps it ran and their output.
+4. Ask it directly, elevated on that machine:
+   `C:\SafeHouse\python\python.exe -m safehouse_setup resolver --force`
+5. Still nothing: in WSL, `docker ps` (both containers Up) and
+   `~/.local/bin/safehouse-reconcile-dns`.
+
+**The resolver card is red but browsing works fine.** That is the whole point of the card
+— it is the shape the 2026-08-01 outage had. The relay falls back to the router, so DNS
+answers and nothing is filtered. Do not read "the internet works" as "this is a false
+alarm"; check `doubleclick.net` yourself:
+
+```powershell
+nslookup doubleclick.net 127.0.0.1   # must come back 0.0.0.0 / ::
+```
+
 ---
 
 ## Files
@@ -316,7 +460,9 @@ change applies within a minute without restarting anything.
 | `python/safehouse_panel/dnsprobe.py` | raw DNS queries and the query-log verdict |
 | `python/safehouse_panel/page.py` | the page: inline CSS and JS, no external requests |
 | `python/safehouse_panel/server.py` | binding, the task entry point, the CLI |
+| `python/safehouse_setup/resolver.py` | the filtering probe and the WSL repair (runs as the user, not SYSTEM) |
 | `C:\ProgramData\SafeHouse\panel-auth.json` | the password hash and salt |
 | `C:\ProgramData\SafeHouse\panel-password.txt` | only after `--generate`; **delete it** |
 | `C:\ProgramData\SafeHouse\panel.json` | optional: `port`, `bind`, `probes` |
 | `C:\ProgramData\SafeHouse\panel.log` | start, hourly heartbeat, every change, every refusal |
+| `C:\ProgramData\SafeHouse\resolver.json` | what the watchdog last did, and what it found |

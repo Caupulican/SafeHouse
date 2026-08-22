@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 from safehouse_ytbudget import browser_guard, roblox_guard
+from safehouse_setup import resolver
 from safehouse_ytbudget.platform.adguard import AdGuardClient, AdGuardConfig
 
 from . import DEFAULT_PORT, DEFAULT_ROOT, controls, dnsprobe, status as statusmod
@@ -128,6 +129,12 @@ def expected_policies() -> dict[str, dict]:
 # staleness is bounded and shown - the page carries the time the snapshot was taken.
 TASK_TTL_SEC = 20
 POLICY_TTL_SEC = 120
+# The resolver chain: two UDP probes plus one `tasklist`. The probes are the reason for
+# the cache rather than the process spawn - when the chain is DOWN each one waits out its
+# timeout, and an uncached snapshot would take longer than the page's own poll interval
+# exactly when the page matters most. One second each, cached for fifteen.
+RESOLVER_TTL_SEC = 15
+RESOLVER_PROBE_TIMEOUT = 1.0
 
 
 class Collector:
@@ -195,6 +202,7 @@ class Collector:
                 "port": self.port,
             },
             "lanes": lanes,
+            "resolver": self._resolver(tasks, now),
             "tasks": statusmod.task_rows(tasks),
             "dns": self._dns(client),
             "probes": self.probes,
@@ -246,6 +254,45 @@ class Collector:
         if state_warning:
             lane["notes"].append(state_warning)
         return lane
+
+    def _resolver(self, tasks, now: int) -> dict:
+        """Is the WSL filtering chain answering, and does anything restart it?
+
+        Read entirely from this SYSTEM process: two UDP probes and one `tasklist`. It
+        deliberately does NOT shell out to wsl.exe - Windows refuses to run WSL as
+        LocalSystem at all - so the panel can always answer "is it up", and only the
+        repair needs the user-session task.
+        """
+        chain = self._cached("resolver", RESOLVER_TTL_SEC, self._chain)
+        return statusmod.resolver_view(
+            chain=chain, last_run=resolver.read_status(self.root),
+            task=statusmod.task_view(statusmod.RESOLVER_TASK, tasks), now=now)
+
+    def _chain(self) -> dict:
+        try:
+            return resolver.chain_state(timeout=RESOLVER_PROBE_TIMEOUT)
+        except Exception:  # noqa: BLE001 - a probe must never take the page down
+            # Everything unknown rather than everything false: a probe that could not run
+            # is not evidence that filtering is off, and the page must not claim it is.
+            return {"filtering": False, "resolves": None, "relay": None, "adguard": None,
+                    "pihole": None, "vm": None, "up": False}
+
+    def start_resolver(self) -> dict:
+        """Ask `SafeHouse-Resolver` to run now, and forget the cached reading.
+
+        `schtasks /Run` returns the moment the scheduler accepts the request, not when the
+        work is done - starting a cold distro and reconciling two container stacks takes
+        tens of seconds. So this reports that it was *asked*, the cache is dropped so the
+        next 10-second poll reads the real state, and the page says which of those two
+        things it is showing. Claiming success here would be a dashboard telling somebody
+        their filtering is back when it may not be.
+        """
+        from safehouse_setup.winutil import SCHTASKS, run as winrun
+
+        self._cache.pop("resolver", None)
+        self._cache.pop("tasks", None)
+        rc, out = winrun([SCHTASKS, "/Run", "/TN", statusmod.RESOLVER_TASK], timeout=60)
+        return {"ok": rc == 0, "detail": out.strip()[:300]}
 
     def _dns(self, client) -> dict:
         if client is None:
@@ -300,4 +347,6 @@ class Collector:
             raise controls.ControlError(f"unknown control {action!r}")
         if action == "youtube_blocked":
             return handler(self.root, value, now=now, client=self.client())
+        if action == "resolver_start":
+            return handler(self.root, value, now=now, collector=self)
         return handler(self.root, value, now=now)

@@ -338,3 +338,159 @@ def test_an_unconfigured_panel_serves_instructions_not_a_login(tmp_path):
     assert made.handle(Request.build(
         "POST", "/api/login", {"Host": "127.0.0.1:8787", "Origin": "http://127.0.0.1:8787"},
         body=b'{"password":"x"}')).status == 503
+
+
+# --- changing the password from the page -------------------------------------
+
+def test_changing_the_password_needs_the_current_one(panel):
+    """The one that matters: the child could be holding the phone the session is open on.
+    A live session must not be enough to lock the parent out of their own controls."""
+    cookie = sign_in(panel)
+    response = post(panel, "/api/password",
+                    {"current": "wrong", "new": "abcd1234", "confirm": "abcd1234"},
+                    cookie=cookie)
+    assert response.status == 401
+    assert panel.store.verify(PASSWORD), "the old password must still work"
+
+
+def test_changing_the_password_works_and_signs_other_devices_out(panel):
+    cookie = sign_in(panel)
+    other = panel.sessions.create("192.168.1.99")
+    response = post(panel, "/api/password",
+                    {"current": PASSWORD, "new": "abcd1234", "confirm": "abcd1234"},
+                    cookie=cookie)
+    assert response.status == 200
+    assert panel.store.verify("abcd1234") and not panel.store.verify(PASSWORD)
+    assert panel.sessions.validate(other) is False, "the other phone must be signed out"
+    assert panel.sessions.validate(cookie) is False, "including the old session id"
+    # ...but this browser gets a fresh cookie in the same response, so the parent is not
+    # thrown out of the page they are standing in.
+    fresh = dict(response.headers)["Set-Cookie"].split(";")[0].split("=", 1)[1]
+    assert panel.sessions.validate(fresh) is True
+
+
+def test_a_mismatched_confirmation_changes_nothing(panel):
+    cookie = sign_in(panel)
+    response = post(panel, "/api/password",
+                    {"current": PASSWORD, "new": "abcd1234", "confirm": "abcd12345"},
+                    cookie=cookie)
+    assert response.status == 400 and "do not match" in body(response)["error"]
+    assert panel.store.verify(PASSWORD)
+
+
+def test_a_short_pin_is_accepted_but_comes_with_a_warning(panel):
+    """The parent asked for a short numeric password. It is their house; the panel says
+    once, plainly, what that leans on rather than refusing the choice."""
+    cookie = sign_in(panel)
+    response = post(panel, "/api/password",
+                    {"current": PASSWORD, "new": "123456", "confirm": "123456"},
+                    cookie=cookie)
+    assert response.status == 200
+    assert panel.store.verify("123456")
+    assert "guesses" in body(response)["advice"]
+
+
+def test_a_blank_or_one_character_password_is_refused(panel):
+    cookie = sign_in(panel)
+    for candidate in ("", "  ", "12"):
+        response = post(panel, "/api/password",
+                        {"current": PASSWORD, "new": candidate, "confirm": candidate},
+                        cookie=cookie)
+        assert response.status == 400
+    assert panel.store.verify(PASSWORD)
+
+
+def test_the_password_change_is_not_a_softer_door_than_the_login(panel):
+    """It shares the login's throttle, so it cannot be used to guess without the lockout."""
+    cookie = sign_in(panel)
+    for _ in range(6):
+        post(panel, "/api/password", {"current": "no", "new": "abcd1234",
+                                      "confirm": "abcd1234"}, cookie=cookie)
+    response = post(panel, "/api/password",
+                    {"current": PASSWORD, "new": "abcd1234", "confirm": "abcd1234"},
+                    cookie=cookie)
+    assert response.status == 429
+    assert panel.store.verify(PASSWORD)
+
+
+def test_a_cross_site_password_change_is_refused(panel):
+    cookie = sign_in(panel)
+    response = post(panel, "/api/password",
+                    {"current": PASSWORD, "new": "abcd1234", "confirm": "abcd1234"},
+                    cookie=cookie, origin="http://evil.example", fetch_site="cross-site")
+    assert response.status == 403
+    assert panel.store.verify(PASSWORD)
+
+
+def test_a_password_change_without_a_session_is_refused(panel):
+    response = post(panel, "/api/password",
+                    {"current": PASSWORD, "new": "abcd1234", "confirm": "abcd1234"})
+    assert response.status == 401
+    assert panel.store.verify(PASSWORD)
+
+
+def test_the_new_password_is_never_written_to_the_log(panel):
+    cookie = sign_in(panel)
+    post(panel, "/api/password", {"current": PASSWORD, "new": "hunter2-secret",
+                                  "confirm": "hunter2-secret"}, cookie=cookie)
+    log = (panel.root / "panel.log").read_text(encoding="utf-8")
+    assert "hunter2-secret" not in log and PASSWORD not in log
+    assert "the panel password was changed" in log
+
+
+# --- the page on a phone -----------------------------------------------------
+
+def test_no_grid_track_is_wider_than_the_viewport(panel):
+    """A bare `minmax(280px,1fr)` does not shrink below 280px, so on a 360px phone the
+    cards pushed the page sideways. Every track must carry the `min(...,100%)` guard."""
+    import re
+
+    html = get(panel, "/", cookie=sign_in(panel)).body.decode()
+    tracks = re.findall(r"minmax\(([^)]*\)?[^)]*)\)", html)
+    assert tracks, "expected responsive grid tracks"
+    for track in tracks:
+        assert track.startswith("min("), track
+
+
+def test_every_table_cell_carries_its_column_name(panel):
+    """Under 720px the tables fold into cards and the heading row is hidden, so a cell
+    with no `data-label` becomes an unlabelled value - a timestamp with nothing saying
+    which timestamp it is.
+
+    Enforced structurally: cells are only ever built by the `td(label, html)` helper,
+    which cannot emit one without a label. So the test is that no other code path writes
+    a `<td` at all.
+    """
+    import re
+
+    html = get(panel, "/", cookie=sign_in(panel)).body.decode()
+    assert html.count("<td") == html.count("data-label="), "a cell without its label"
+    # And the helper is genuinely used, rather than the tables having quietly vanished.
+    assert len(re.findall(r"\+td\(", html)) >= 15
+
+
+def test_every_table_that_folds_is_marked_as_foldable(panel):
+    """The card layout is keyed off `table.rt`. A table built without that class keeps
+    five columns on a 360px screen, which is a horizontal scrollbar hiding the verdict
+    column - the one the page exists to show."""
+    import re
+
+    html = get(panel, "/", cookie=sign_in(panel)).body.decode()
+    opens = re.findall(r"<table([^>]*)>", html)
+    assert opens, "expected at least one table"
+    for attrs in opens:
+        assert 'class="rt"' in attrs, attrs
+
+
+def test_the_page_declares_a_viewport_and_both_colour_schemes(panel):
+    html = get(panel, "/", cookie=sign_in(panel)).body.decode()
+    assert 'name="viewport" content="width=device-width' in html
+    assert 'name="color-scheme" content="light dark"' in html
+    assert "prefers-color-scheme:dark" in html
+
+
+def test_the_resolver_section_is_on_the_page(panel):
+    html = get(panel, "/", cookie=sign_in(panel)).body.decode()
+    assert 'id="resolver"' in html
+    assert "resolver_start" in html
+    assert "falls back to the router" in html
