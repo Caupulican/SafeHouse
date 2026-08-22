@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -164,6 +165,95 @@ class AdGuardClient:
         if status != 200:
             return f"ERROR:{status}"
         return "BLOCKED" if blocked else "UNBLOCKED"
+
+    # --- read-only views, for anything that reports what the resolver is doing -----
+    #
+    # These exist so the control panel (safehouse_panel) has ONE HTTP client to AdGuard
+    # rather than a second one of its own. Every one of them returns None when the
+    # resolver could not be reached or answered something unparseable, so a caller can
+    # tell "AdGuard says filtering is off" from "we could not ask" - a distinction the
+    # panel has to draw on screen, because reporting an unknown as a green tick is the
+    # exact failure this project keeps being bitten by.
+
+    def _json(self, path: str) -> object | None:
+        status, body = self._call(path)
+        if status != 200:
+            return None
+        try:
+            return json.loads(body)
+        except ValueError:
+            return None
+
+    def _json_dict(self, path: str) -> dict | None:
+        obj = self._json(path)
+        return obj if isinstance(obj, dict) else None
+
+    def server_status(self) -> dict | None:
+        """`/control/status`: version, running, protection_enabled, dns_addresses."""
+        return self._json_dict("/control/status")
+
+    def filtering_status(self) -> dict | None:
+        """`/control/filtering/status`: the filter lists, their rule counts, user rules."""
+        return self._json_dict("/control/filtering/status")
+
+    def parental_status(self) -> dict | None:
+        return self._json_dict("/control/parental/status")
+
+    def safebrowsing_status(self) -> dict | None:
+        return self._json_dict("/control/safebrowsing/status")
+
+    def safesearch_status(self) -> dict | None:
+        """Per-engine on newer builds (`{"enabled":true,"google":true,...}`), a bare
+        `{"enabled":...}` on older ones. Both shapes are handed back untouched; the
+        caller renders whatever engines are actually reported rather than inventing a
+        list this build does not have."""
+        return self._json_dict("/control/safesearch/status")
+
+    def user_rules(self) -> list[str] | None:
+        """The user-rules list, or None if it could not be read.
+
+        None and `[]` must not be conflated: an empty list means the parent's own rules
+        are gone, which is a finding, and an unreachable resolver is not.
+        """
+        obj = self.filtering_status()
+        if obj is None:
+            return None
+        rules = obj.get("user_rules")
+        if isinstance(rules, list):
+            return [str(rule) for rule in rules]
+        # Some builds return the block as one newline-joined string.
+        if isinstance(rules, str):
+            return rules.splitlines()
+        return None
+
+    def set_user_rules(self, rules: list[str]) -> str:
+        """Replace the whole user-rules list. Returns a short status for the log.
+
+        `set_rules` is all-or-nothing - there is no add/remove endpoint - so every caller
+        must read the live list, edit that, and write it back. Building the payload from
+        a fixed list instead would silently delete every rule a parent added by hand.
+        """
+        status, _ = self._call("/control/filtering/set_rules",
+                               {"rules": list(rules)}, method="POST")
+        if status is None:
+            return "UNREACHABLE"
+        return "OK" if status == 200 else f"ERROR:{status}"
+
+    def query_log(self, *, search: str = "", limit: int = 20) -> list[dict] | None:
+        """Recent query-log entries, newest first, or None if unreadable.
+
+        The `reason` field on each entry is the only honest verdict for "is this domain
+        blocked": see safehouse_panel.dnsprobe for why reading the returned IP instead
+        reports a working block as a leak.
+        """
+        query = f"/control/querylog?limit={int(limit)}"
+        if search:
+            query += "&search=" + urllib.parse.quote(search)
+        obj = self._json_dict(query)
+        if obj is None:
+            return None
+        data = obj.get("data")
+        return [entry for entry in data if isinstance(entry, dict)] if isinstance(data, list) else []
 
 
 DEFAULT_CREDENTIALS = "adguard.json"

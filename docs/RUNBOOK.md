@@ -245,6 +245,43 @@ or `Unregister-ScheduledTask -TaskName SafeHouse-BrowserGuard -Confirm:$false` (
 same for `SafeHouse-RobloxBudget`. A temporary parent override is `--unlock N` instead, so
 it expires by itself.
 
+## The control panel (dashboard + settings, from any device in the house)
+
+One web page showing everything that is enforced, with sliders that write the real config.
+It runs **on the child's PC** as a SYSTEM scheduled task (`SafeHouse-Panel`, boot-triggered,
+restarted if it dies) and is read **from another device on the LAN** — never displayed on
+that machine: no browser is opened, no console, no toast. Full detail, including the
+security model and its limits, in [PANEL.md](PANEL.md).
+
+```powershell
+# Arm it (elevated). Registers the task and opens TCP 8787 to the local subnet only.
+cd C:\SafeHouse\windows\youtube-budget
+C:\SafeHouse\python\python.exe .\install.py --panel-only
+
+# Set the password. It is written to C:\ProgramData\SafeHouse\panel-password.txt —
+# store it, then DELETE that file. Only the hash is kept.
+C:\SafeHouse\python\python.exe -m safehouse_panel set-password --generate
+```
+
+Then open `http://192.168.1.50:8787` from a phone or laptop on the house network.
+
+- **Binds the primary LAN address plus loopback, never `0.0.0.0`** — the box also has two
+  VMware host-only adapters and the WSL adapter, and publishing a control surface for every
+  protection in the house on those is not wanted. The LAN address is DHCP: **set a
+  reservation on the router**, or the bookmark breaks and it looks like the panel is down.
+- **Password + session cookie, and no TLS.** Traffic crosses the LAN in clear, so anyone
+  already sniffing this network can read the login. House LAN only, not port-forwarded.
+- **Weakening a protection asks for the password again** (more Roblox minutes, a bonus,
+  disabling the browser guard, unlocking browsing, allowing YouTube). Tightening does not.
+- **Verify the readings without it:** `C:\SafeHouse\python\python.exe -m safehouse_panel
+  self-test` prints the whole snapshot as JSON and binds nothing. PANEL.md has a table of
+  independent checks for every reading on the page.
+- **Is it alive?** `Get-Content C:\ProgramData\SafeHouse\panel.log -Tail 5` — a `[start]`
+  line with the bound addresses, an `[alive]` line every hour, and every change as
+  `[change] <control>: before -> after (by <address>)`.
+- **Do not read it on the guarded PC.** The browser guard closes the browser you would be
+  reading it in, within about a minute — that is what the unlock control is for.
+
 ## Blocklists auto-update (weekly)
 `scripts/auto-update.sh` re-applies the repo blocklists and rebuilds gravity so every adlist's
 contents (ads + NSFW) re-download. A weekly schedule (default **Sunday 04:00 local**) is installed

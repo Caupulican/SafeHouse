@@ -21,6 +21,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -30,6 +31,10 @@ LIVE_TASK = "SafeHouse-YouTubeBudget-Py"
 SHADOW_TASK = "SafeHouse-YouTubeBudget-PyShadow"
 ROBLOX_TASK = "SafeHouse-RobloxBudget"
 BROWSER_TASK = "SafeHouse-BrowserGuard"
+PANEL_TASK = "SafeHouse-Panel"
+# 8080 is already in use on this machine, and 8443 would advertise a TLS service the
+# panel does not serve. 8787 was free.
+PANEL_PORT = 8787
 
 TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -171,9 +176,15 @@ def add_av_exclusions(paths: list[Path]) -> None:
 
 def register_task(*, name: str, python: Path, arguments: str, workdir: Path,
                   description: str, start: bool, xml_template: str = TASK_XML) -> bool:
+    # Every value is XML-escaped, not just the prose one. These land inside elements of
+    # a document `schtasks /XML` parses strictly, and it rejects the whole file for one
+    # stray character: a `<` in a description registered nothing and reported only
+    # "O XML esta mal construido" with a line and column. Paths reach here too, and a
+    # directory with `&` in its name would fail exactly the same way.
+    esc = escape
     xml = xml_template.format(
-        name=name, description=description, python=python,
-        arguments=arguments, workdir=workdir,
+        name=esc(name), description=esc(description), python=esc(str(python)),
+        arguments=esc(arguments), workdir=esc(str(workdir)),
     )
     # schtasks /XML insists on a UTF-16 file with a BOM.
     tmp = workdir / f".{name}.xml"
@@ -230,6 +241,49 @@ def register_browser_guard(*, python: Path, workdir: Path) -> bool:
                      "minute of it opening (no browsing on this PC; games are untouched)"),
         start=False, xml_template=GUARD_TASK_XML,
     )
+
+
+def register_panel(*, python: Path, workdir: Path, port: int = PANEL_PORT) -> bool:
+    """The control panel - a RESIDENT service, so it takes the watcher's task shape.
+
+    Not GUARD_TASK_XML, which is what the two kill lanes use: that is a one-shot on a
+    PT1M repetition with `ExecutionTimeLimit PT5M`, and it would terminate a long-lived
+    HTTP server every five minutes. TASK_XML has no execution time limit and a
+    RestartOnFailure block, which is what "always alive" needs - the parent must be able
+    to reach this from another room at any hour, and a panel that died at lunchtime is
+    discovered by finding it unreachable.
+
+    It runs as SYSTEM so it can write `C:\\ProgramData\\SafeHouse`, whose ACL is
+    SYSTEM+Administrators. It binds loopback plus the primary LAN address only; see
+    `safehouse_panel.server` for why not 0.0.0.0.
+    """
+    return register_task(
+        name=PANEL_TASK, python=python,
+        arguments=f"-m safehouse_panel --port {port}", workdir=workdir,
+        description=("SafeHouse control panel - the parent's dashboard and settings UI, "
+                     f"served on TCP {port} to the house LAN only. Password required; "
+                     "no TLS, so the login crosses the LAN in clear."),
+        start=True,
+    )
+
+
+def open_panel_firewall(port: int = PANEL_PORT) -> str:
+    """Allow inbound TCP to the panel from the local subnet only.
+
+    `remoteip=LocalSubnet` is the load-bearing part: the panel is for the house network,
+    and a rule without it would also accept anything the router happens to forward. The
+    Private and Domain profiles only - a laptop on a coffee-shop network must not be
+    serving this.
+    """
+    run(["netsh", "advfirewall", "firewall", "delete", "rule", "name=SafeHouse-Panel"])
+    rc, out = run([
+        "netsh", "advfirewall", "firewall", "add", "rule", "name=SafeHouse-Panel",
+        "dir=in", "action=allow", "protocol=TCP", f"localport={port}",
+        "remoteip=LocalSubnet", "profile=private,domain", "enable=yes",
+        "description=SafeHouse parental control panel (house LAN only)",
+    ])
+    return (f"opened TCP {port} inbound from the local subnet (private+domain profiles)"
+            if rc == 0 else f"FAILED to open TCP {port}: {out.strip()[:200]}")
 
 
 def seed_json(path: Path, payload: dict) -> str:
@@ -343,6 +397,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--browser-guard-only", action="store_true",
                    help="register only the browser kill-lane task; touches nothing else "
                         "(no watcher, no config render, no task retirement)")
+    p.add_argument("--panel-only", action="store_true",
+                   help="register only the control-panel task and its firewall rule; "
+                        "touches nothing else")
+    p.add_argument("--panel-port", type=int, default=PANEL_PORT,
+                   help=f"port the control panel listens on (default {PANEL_PORT})")
+    p.add_argument("--no-panel", action="store_true",
+                   help="do not register the control panel task")
     args = p.parse_args(argv)
 
     if not is_admin():
@@ -362,6 +423,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.browser_guard_only:
         print(f"[*] Registering scheduled task {BROWSER_TASK}...")
         return 0 if register_browser_guard(python=args.python, workdir=pkg_dir) else 1
+
+    if args.panel_only:
+        print(f"[*] Registering scheduled task {PANEL_TASK}...")
+        ok = register_panel(python=args.python, workdir=pkg_dir, port=args.panel_port)
+        print(f"    {open_panel_firewall(args.panel_port)}")
+        print(f"    NEXT: {args.python} -m safehouse_panel set-password "
+              f"(elevated, on this machine) - until a password is set the panel serves "
+              f"only its instructions page.")
+        return 0 if ok else 1
 
     retire_legacy_runtime()
 
@@ -435,6 +505,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[*] Registering scheduled task {BROWSER_TASK}...")
     if not register_browser_guard(python=args.python, workdir=pkg_dir):
         return 1
+
+    if not args.no_panel:
+        print(f"[*] Registering scheduled task {PANEL_TASK}...")
+        if not register_panel(python=args.python, workdir=pkg_dir, port=args.panel_port):
+            return 1
+        print(f"    {open_panel_firewall(args.panel_port)}")
+        print(f"    The panel has NO password until you set one, elevated, on this "
+              f"machine:")
+        print(f"      {args.python} -m safehouse_panel set-password")
 
     print()
     if args.shadow:

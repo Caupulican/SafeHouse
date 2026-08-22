@@ -60,3 +60,38 @@ def test_adguard_http_policy_has_one_implementation():
         source = (root / script).read_text()
         assert "from adguard_api import api" in source
         assert "def api(" not in source
+
+
+# --- task XML escaping -------------------------------------------------------
+# A `<` in a task description registered nothing and reported only "the XML is malformed"
+# with a line and column. Paths are interpolated into the same document, so a directory
+# containing `&` would fail identically and just as opaquely.
+
+def test_task_xml_escapes_every_interpolated_value(tmp_path, monkeypatch):
+    import install as installmod
+
+    captured = {}
+
+    def fake_run(args):
+        if args[:2] == ["schtasks", "/Create"]:
+            captured["xml"] = Path(args[args.index("/XML") + 1]).read_text(encoding="utf-16")
+        return 0, ""
+
+    monkeypatch.setattr(installmod, "run", fake_run)
+    ok = installmod.register_task(
+        name="SafeHouse-Test", python=Path(r"C:\A & B\python.exe"),
+        arguments="-m thing --flag <x>", workdir=tmp_path,
+        description="dashboard on http://<this machine>:8787 & more",
+        start=False,
+    )
+    assert ok
+    xml = captured["xml"]
+    # The raw metacharacters must not survive into the document...
+    assert "<this machine>" not in xml
+    assert "A & B" not in xml
+    # ...and must appear as entities instead.
+    assert "&lt;this machine&gt;" in xml
+    assert "A &amp; B" in xml
+    # And the result must still parse, which is the property that actually failed.
+    import xml.etree.ElementTree as ET
+    ET.fromstring(xml)

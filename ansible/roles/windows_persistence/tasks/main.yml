@@ -50,6 +50,7 @@
   loop:
     - safehouse_setup
     - safehouse_ytbudget
+    - safehouse_panel
 
 - name: Ensure C:\SafeHouse working dirs exist
   ansible.builtin.file:
@@ -90,4 +91,5 @@
       - "2) Point DNS:      C:\\SafeHouse\\python\\python.exe -m safehouse_setup dns"
       - "3) Arm firewall:   powershell -ExecutionPolicy Bypass -File C:\\SafeHouse\\windows\\safehouse-adblock.ps1  (with ads showing)"
       - "4) (Optional) Arm YouTube budget: cd C:\\SafeHouse\\windows\\youtube-budget; C:\\SafeHouse\\python\\python.exe install.py"
+      - "5) Control panel:   C:\\SafeHouse\\python\\python.exe -m safehouse_panel set-password  (then http://<this machine>:8787)"
       - "Then RESTART Google Play Games so the crosvm VM picks up Pi-hole. See windows/README.md."

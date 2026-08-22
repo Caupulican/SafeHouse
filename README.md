@@ -306,6 +306,7 @@ Logs live in `C:\ProgramData\SafeHouse\`.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how the layers fit together
 - [docs/ADGUARD.md](docs/ADGUARD.md) — the DNS chain and the bypasses it must close
 - [docs/FIREWALL.md](docs/FIREWALL.md) — connection-layer blocking for the VM
+- [docs/PANEL.md](docs/PANEL.md) — the parent's web control panel, and its security model
 - [docs/RUNBOOK.md](docs/RUNBOOK.md) — day-to-day operations
 - [docs/PYTHON-PORT.md](docs/PYTHON-PORT.md) — the in-progress Python rewrite
 
