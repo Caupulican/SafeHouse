@@ -120,6 +120,62 @@ hand in that product. And note the standing honesty of this setup: child has loc
 by choice, so he *can* stop the task. The point of these lanes is that doing so is a
 visible, deliberate act, not that it is impossible.
 
+## Layer 3a — granting time, and taking it back
+
+The allowance is a **scalar with no day awareness**: `roblox-budget.json` holds one
+`limit_min` for every day of the week. There is no Roblox equivalent of the panel's
+YouTube schedule engine, so "this weekend only" is not something the config can say. It
+has to be granted and then un-granted, and the un-granting is the part that gets
+forgotten — a raised `limit_min` stays raised until somebody remembers the file exists.
+
+Two grant shapes, and picking the wrong one is the usual mistake:
+
+| Grant | Where | Ends by itself |
+|---|---|---|
+| **One day** | `bonus_sec` in `roblox-budget.state.json` | Yes — the date rollover discards it |
+| **Several days** | `limit_min` in `roblox-budget.json` | **No** — needs an expiry task |
+
+`bonus_sec` cannot span a weekend: it is scoped to the state file's `date` and dies at
+midnight. Reaching for it on a Friday to cover Sunday is the shape of bug that hands a
+child a locked game on Saturday morning with no explanation.
+
+### The expiry task
+
+For a multi-day grant, register a one-shot scheduled task that writes `limit_min` back
+to the standing value and then deletes itself. Three properties make it safe, and all
+three have bitten in practice:
+
+* **Two triggers.** A `TimeTrigger` at the expiry instant, *and* a `BootTrigger` — the
+  midnight run never happens if the machine is off, and `StartWhenAvailable` only
+  covers a *missed* scheduled run, at an arbitrary later time.
+* **Date-aware**, exactly like `adguard_daily_reset.py`. The boot backstop fires every
+  boot, including Saturday's, so a run before the expiry date must do nothing at all —
+  no write, no log line. Without this the "backstop" ends the grant early.
+* **Once-only**, via a marker file next to the state. The task deletes itself after a
+  successful revert, but a delete that fails leaves a zombie firing at every future
+  boot — and that zombie would silently zero out the *next* grant a parent makes. The
+  marker is what makes a lingering task inert instead of harmful.
+
+Register it with `schtasks /Create /XML` and a **UTF-16** file, not `/SC ONCE /SD`:
+this machine is pt-BR, so `/SD` expects `dd/MM/yyyy`, while an ISO-8601
+`<StartBoundary>` in the XML is locale-independent. Same reason `install.py` registers
+every task from XML.
+
+**Verify:** `schtasks /Query /TN <task> /FO CSV /V` shows the expected next run; then
+exercise the script against a throwaway root for all four paths — before the expiry
+date (does nothing), on it (reverts and self-deletes), after a revert with the marker
+present (does nothing, even if the config was re-granted), and with an unreadable
+config (leaves it alone; the guard already falls back to 0).
+
+### The panel cannot express a full day
+
+The panel's Roblox "Por dia" slider is `max="240"` (`ROBLOX_LIMIT_RANGE` in
+`safehouse_panel/controls.py`), and `set_roblox_limit` clamps to it. A file-level grant
+above 240 minutes therefore **cannot be shown or written from the panel** — the slider
+pins to 240, and a parent who touches it and presses Aplicar silently cuts the grant to
+four hours. Grant and revoke a full-day allowance in the file, or keep the grant inside
+240 minutes so the panel stays truthful.
+
 ## What is deliberately NOT blocked
 
 In-experience "ads" that are really content — developer-placed billboards and
