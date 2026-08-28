@@ -239,15 +239,21 @@ def test_youtube_state_distinguishes_partial_from_allowed_and_unknown():
     assert controls.youtube_state(["||youtube.com^"]) == "PARTIAL"
 
 
-def test_the_panel_rules_match_the_repos_own_user_rules_file():
+def test_the_repo_never_standing_blocks_a_youtube_rule_the_panel_cannot_lift():
     """One source of truth. adguard/apply-filters.py reconciles user-rules.txt into the
     running instance, so a rule that drifts out of this list is one the panel can never
-    remove - it would come straight back and look like the toggle did nothing."""
+    remove - it would come straight back and look like the toggle did nothing.
+
+    Containment, not equality: since 2026-08-26 the repo standing-blocks NOTHING for
+    YouTube (the block was lifted; the file keeps a comment-only note in its place), so
+    the empty set is the expected, correct answer here. What must never happen is a
+    YouTube rule appearing in the repo that `YOUTUBE_RULES` does not know how to remove.
+    """
     payload = (REPO / "adguard" / "user-rules.txt").read_text().partition("\n\n")[2]
     repo_youtube = {line.strip() for line in payload.splitlines()
                     if line.strip().startswith("||")
                     and ("youtu" in line or "googlevideo" in line or "ytimg" in line)}
-    assert repo_youtube == set(controls.YOUTUBE_RULES)
+    assert repo_youtube <= set(controls.YOUTUBE_RULES)
 
 
 class FakeAdGuard:

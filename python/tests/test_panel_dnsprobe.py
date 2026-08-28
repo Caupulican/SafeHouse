@@ -270,7 +270,7 @@ def test_a_run_resolves_first_then_reads_the_log_for_each_domain():
 
     client = FakeClient({
         "doubleclick.net": [entry("doubleclick.net", "FilteredBlackList")],
-        "www.youtube.com": [entry("www.youtube.com", "FilteredBlackList")],
+        "www.youtube.com": [entry("www.youtube.com", "NotFilteredNotFound")],
         "example.com": [entry("example.com", "NotFilteredNotFound")],
     })
     results = dnsprobe.run_probes(dnsprobe.probe_list(None), client=client,
@@ -278,7 +278,8 @@ def test_a_run_resolves_first_then_reads_the_log_for_each_domain():
                                   asker=asker)
     verdicts = {r["key"]: (r["verdict"], r["ok"]) for r in results}
     assert verdicts["ads"] == ("BLOCKED", True)
-    assert verdicts["youtube"] == ("BLOCKED", True)
+    # expect=ALLOWED since the block was lifted: resolving normally is the pass
+    assert verdicts["youtube"] == ("ALLOWED", True)
     assert verdicts["control"] == ("ALLOWED", True)
     assert verdicts["adult"] == ("UNKNOWN", False)
     # The unconfigured probe is never resolved and never searched for.

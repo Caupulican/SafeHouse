@@ -385,8 +385,10 @@ _STRINGS: dict[str, tuple[str, str]] = {
                       "as listas de anúncios e rastreadores estão carregadas e "
                       "funcionando"),
     "probe.youtube.label": ("YouTube", "YouTube"),
-    "probe.youtube.why": ("the standing YouTube block is live at the resolver",
-                          "o bloqueio permanente do YouTube está ativo no resolvedor"),
+    "probe.youtube.why": ("YouTube resolves normally - the standing block was lifted "
+                          "on 2026-08-26 and nothing is putting it back",
+                          "o YouTube resolve normalmente - o bloqueio permanente foi "
+                          "retirado em 26/08/2026 e nada o recoloca"),
     "probe.adult.label": ("Adult content", "Conteúdo adulto"),
     "probe.adult.why": ("the NSFW list is loaded and matching",
                         "a lista NSFW está carregada e funcionando"),
@@ -787,15 +789,15 @@ _STRINGS: dict[str, tuple[str, str]] = {
                    "Uma espera aleatória entre encontrar o alvo e fechá-lo, para que o "
                    "momento não possa ser cronometrado."),
     "hint.youtube": ("The only lane that also covers the Play Games VM, phones and "
-                     "TVs; it takes YouTube Music with it. Blocked except during the "
-                     "windows you allow. apply-filters.py re-adds the standing rules "
-                     "when it runs; during an allowed window the panel lifts them "
-                     "again within a minute.",
+                     "TVs; it takes YouTube Music with it. Released on 2026-08-26: "
+                     "the mode is \"allowed\" and the repo carries no standing rules, so "
+                     "nothing puts the block back on its own. Blocking here - by hand or "
+                     "with a schedule - holds until you change it.",
                      "A única via que também alcança a VM do Play Games, celulares e "
-                     "TVs; leva o YouTube Music junto. Bloqueado, exceto nas janelas "
-                     "que você liberar. O apply-filters.py recoloca as regras "
-                     "permanentes quando roda; durante uma janela liberada o painel "
-                     "as retira de novo em até um minuto."),
+                     "TVs; leva o YouTube Music junto. Liberado em 26/08/2026: o modo "
+                     "é \"liberado\" e o repositório não tem mais regras permanentes, "
+                     "então nada recoloca o bloqueio sozinho. Bloquear aqui - à mão ou "
+                     "com um horário - vale até você mudar."),
     "lbl.soonest": ("soonest", "mínimo"),
     "lbl.latest": ("latest", "máximo"),
     "h.dns": ("DNS filtering", "Filtragem DNS"),

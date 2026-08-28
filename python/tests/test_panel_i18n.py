@@ -109,8 +109,11 @@ def test_the_safety_critical_warnings_exist_in_both_languages():
         "hint.notify": ("at the parent's instruction", "por decisão do pai"),
         # (c) the browser budget is stored, not enforced
         "hint.browser_limit": ("not enforced yet", "ainda não aplicado"),
-        # (d) unblocking YouTube does not survive the reconciler
-        "hint.youtube": ("apply-filters.py", "apply-filters.py"),
+        # (d) YouTube is released and STAYS released - the reconciler caveat that used
+        # to live here stopped being true on 2026-08-26, when the standing rules were
+        # removed from the repo. A parent must still be told the lane holds where it is
+        # put, in either direction, so the pin follows the truth rather than dropping.
+        "hint.youtube": ("nothing puts the block back", "nada recoloca o bloqueio"),
         # (f) UNKNOWN is not OFF
         "n.unknown": ("UNKNOWN is not OFF", "DESCONHECIDO não é DESLIGADO"),
     }

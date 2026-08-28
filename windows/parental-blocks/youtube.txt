@@ -5,11 +5,13 @@
 # which appends a `0.0.0.0 <host>` line for each entry below to the live Windows
 # hosts file (and `-Allow` removes that section again).
 #
-# STANDING POLICY since 2026-08-19: YouTube is BLOCKED. The authoritative lane is the
-# resolver (adguard/user-rules.txt), because it also covers the Google Play Games VM
-# and every phone on the network; this hosts list is the Windows-only half and still
-# has to be applied by running the toggle -- the script never applies it on its own.
-# `--allow` lifts it, and is a deliberate parental exception, not the default state.
+# STANDING POLICY since 2026-08-26: YouTube is ALLOWED, at all times, on the parent's
+# call. The 2026-08-19 block was lifted in every lane -- the resolver rules are gone from
+# adguard/user-rules.txt, the Pi-hole regexes are commented out in
+# blocklists/parental-denylist.txt, and the panel's schedule is set to "allowed".
+# This file is NOT a block: it is only the hostname list `safehouse_setup toggle youtube
+# --block` would use IF a parent chose to block the Windows box again, and the script
+# never applies it on its own. It is kept so that choice stays one command away.
 #
 # Format: one hostname per line. Blank lines and lines starting with '#' are ignored.
 # To block more YouTube surfaces, add hostnames here, then re-run the toggle.

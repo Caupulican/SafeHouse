@@ -12,24 +12,25 @@
 # One regex per line catches a whole domain family incl. all subdomains. Lines
 # starting with '#' are ignored. Apply with ../scripts/load-blocklists.sh.
 
-# --- YouTube family (BLOCKED — standing policy since 2026-08-19) ---
-# YouTube is not allowed on this network. It is blocked here at the Pi-hole layer and,
-# more importantly, in adguard/user-rules.txt: AdGuard Home is the resolver actually on
-# :53, with Pi-hole behind it on :5353, so these lines exist to keep the two lanes
-# saying the same thing rather than to be the enforcement on their own.
-# This takes YouTube Music with it — music.youtube.com is the same domain family.
-# To allow YouTube again, comment these out and run ../scripts/load-blocklists.sh, and
-# remove the matching rules from AdGuard's user rules.
-(^|\.)youtube\.com$
-(^|\.)youtu\.be$
-(^|\.)youtubekids\.com$
-(^|\.)youtube-nocookie\.com$
-(^|\.)googlevideo\.com$
-(^|\.)ytimg\.com$
-# InnerTube/API endpoints, named one by one. The bare googleapis.com would take the Play
-# Store, Drive and Maps with it — far more than YouTube.
-(^|\.)youtubei\.googleapis\.com$
-(^|\.)youtube\.googleapis\.com$
+# --- YouTube family (ALLOWED — parent's call, 2026-08-26) ---
+# The standing block that lived here since 2026-08-19 was lifted: YouTube is to stay
+# reachable at all times. The regexes are kept below, COMMENTED OUT, because
+# load-blocklists.sh is INSERT OR IGNORE — an uncommented line here would be re-inserted
+# into Pi-hole by the weekly auto-update and quietly put the block back a week later,
+# with the AdGuard lane still open so it would look like "YouTube broke on its own".
+# The matching AdGuard lane is adguard/user-rules.txt, which now carries a note and no
+# rules. To block again: uncomment these, restore the AdGuard rules, then run
+# ../scripts/load-blocklists.sh and adguard/apply-filters.py.
+# NOTE: un-commenting alone does not remove anything already loaded — this loader only
+# ever adds. Deleting a live entry is a Pi-hole UI / gravity.db operation.
+#(^|\.)youtube\.com$
+#(^|\.)youtu\.be$
+#(^|\.)youtubekids\.com$
+#(^|\.)youtube-nocookie\.com$
+#(^|\.)googlevideo\.com$
+#(^|\.)ytimg\.com$
+#(^|\.)youtubei\.googleapis\.com$
+#(^|\.)youtube\.googleapis\.com$
 
 # --- Extend here ---
 # Add more domain families below as needed, one regex per line, e.g. social media:

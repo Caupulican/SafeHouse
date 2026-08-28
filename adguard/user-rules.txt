@@ -5,23 +5,18 @@
 ! everything below it is the payload, comments included, so the running instance
 ! stays self-explaining.
 
-! SafeHouse: YouTube blocked (2026-08-19)
-! Standing policy is no web browsing for an 8-year-old, and YouTube is the one service
-! that survives every browser-level control: it is reachable from the Play Games VM, a
-! phone, a tablet and a TV. The resolver is the only lane that covers all of them, which
-! is why it is blocked here and not only on the Windows box.
-! This takes YouTube Music with it - music.youtube.com is the same domain family.
-||youtube.com^
-||youtu.be^
-||youtubekids.com^
-||youtube-nocookie.com^
-||googlevideo.com^
-||ytimg.com^
-! InnerTube/API endpoints, which the PWA and mobile-style clients talk to directly, so
-! blocking only the www hostnames leaves an app-shaped hole. Named one by one: blocking
-! googleapis.com broadly would take the Play Store, Drive and Maps with it.
-||youtubei.googleapis.com^
-||youtube.googleapis.com^
+! SafeHouse: YouTube ALLOWED (2026-08-26)
+! The standing block that stood here since 2026-08-19 was lifted on the parent's call:
+! YouTube is to stay reachable at all times, on every device this resolver answers for.
+! Deliberately NO rules under this header - it is a note, not a lane. Because
+! apply-filters.py only ever ADDS what is missing, leaving the old `||youtube.com^` block
+! in this file would have re-applied it on the next reconcile and looked like the panel
+! toggle did nothing.
+! The panel's own toggle (Bloquear/Liberar) still works and still owns the same rule set;
+! it simply has nothing standing behind it now. To go back to a standing block, restore
+! the eight rules below this header and re-run apply-filters.py:
+!   ||youtube.com^  ||youtu.be^  ||youtubekids.com^  ||youtube-nocookie.com^
+!   ||googlevideo.com^  ||ytimg.com^  ||youtubei.googleapis.com^  ||youtube.googleapis.com^
 
 ! SafeHouse: allowlist - false positives the games need (2026-08-19)
 ! Firebase Installations is app identity, not advertising: Android apps call it at

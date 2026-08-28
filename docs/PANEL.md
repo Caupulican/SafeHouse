@@ -405,11 +405,14 @@ Three things worth knowing before you touch them:
 - **`notify` is off at the parent's instruction** — the child sees the window close but is
   not told what closed it. The control is labelled "tell the child when a browser is
   closed" so nobody flips it by accident.
-- **`adguard/apply-filters.py` re-adds the standing YouTube rules whenever it runs.**
-  That used to mean an unblock from the panel simply did not survive a reconcile. Now the
-  schedule reconciler (below) strips them again within a minute whenever the schedule says
-  YouTube is allowed right now — a deliberate, cheap tug-of-war that the schedule wins.
-  An unblock that must survive *without* a schedule still needs the repo changed too.
+- **YouTube is released as of 2026-08-26, and nothing re-applies the block.** The repo's
+  standing rules were removed from `adguard/user-rules.txt` (a comment-only note sits in
+  their place) and the Pi-hole regexes are commented out in
+  `blocklists/parental-denylist.txt`, so neither `apply-filters.py` nor the weekly
+  `auto-update.sh` puts YouTube back. The panel's mode is `allowed`, which the reconciler
+  never enforces against. A block set here — by hand or with a schedule — therefore holds
+  until a parent changes it. To restore a *standing* block, both repo files have to change
+  back as well; the panel alone survives a reconcile now, but not a rebuild from the repo.
 
 ### YouTube: allowed time windows
 

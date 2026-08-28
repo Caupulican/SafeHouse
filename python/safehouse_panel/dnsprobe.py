@@ -64,7 +64,11 @@ REWRITE_REASONS = {"Rewrite", "RewriteEtcHosts", "RewriteRule"}
 BUILTIN_PROBES = (
     {"key": "ads", "domain": "doubleclick.net", "expect": "BLOCKED",
      "label": msg("probe.ads.label"), "why": msg("probe.ads.why")},
-    {"key": "youtube", "domain": "www.youtube.com", "expect": "BLOCKED",
+    # ALLOWED since 2026-08-26: the standing block was lifted on the parent's call. The
+    # probe is kept and its expectation flipped rather than deleted - a lane a parent can
+    # toggle is worth watching in either direction, and a probe expecting BLOCKED here
+    # would now paint the page red for doing exactly what was asked.
+    {"key": "youtube", "domain": "www.youtube.com", "expect": "ALLOWED",
      "label": msg("probe.youtube.label"), "why": msg("probe.youtube.why")},
     {"key": "adult", "domain": None, "expect": "BLOCKED",
      "label": msg("probe.adult.label"), "why": msg("probe.adult.why")},

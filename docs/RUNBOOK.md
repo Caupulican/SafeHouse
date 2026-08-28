@@ -36,8 +36,9 @@ Append the URL to `blocklists/adlists.txt`, then `./scripts/load-blocklists.sh`.
 
 ## Parental content layer (DNS) and NSFW coverage
 - The **parental content layer** lives in `blocklists/parental-denylist.txt` — Pi-hole regex
-  (type 3) loaded with the comment `SafeHouse-Parental`, e.g. the YouTube family. Add more domain
-  families there (one regex per line) and apply with `./scripts/load-blocklists.sh`.
+  (type 3) loaded with the comment `SafeHouse-Parental`. Add more domain families there (one
+  regex per line) and apply with `./scripts/load-blocklists.sh`. The YouTube family sits in that
+  file **commented out** since 2026-08-26 — kept as a ready-made block, deliberately not loaded.
 - **Adult / NSFW** is covered network-wide by the **HaGeZi NSFW adlist URL** in `adlists.txt` — a
   referenced list, never domain literals in this (public) repo. It downloads with every gravity
   rebuild, so the weekly auto-update keeps it fresh.
