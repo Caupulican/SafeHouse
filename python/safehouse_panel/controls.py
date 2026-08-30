@@ -26,7 +26,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
-from safehouse_ytbudget import browser_guard, roblox_guard
+from safehouse_ytbudget import browser_guard, roblox_games, roblox_guard
 from safehouse_ytbudget.atomicio import write_json
 
 from . import i18n, schedule
@@ -49,6 +49,14 @@ DELAY_RANGE = (1, 60)
 
 ROBLOX_CONFIG = "roblox-budget.json"
 ROBLOX_STATE = "roblox-budget.state.json"
+GAMES_CONFIG = "roblox-games.json"
+GAMES_SEEN = "roblox-games.seen.json"
+GAMES_RATINGS = "roblox-games.maturity.json"
+# A ceiling on the allow list, for the same reason the sliders have one: the page posts
+# whatever it holds, and a list that can grow without bound is a config file that can be
+# made unreadable from the browser. A hundred is seven times what two days of play
+# produced here.
+GAMES_LIST_MAX = 100
 BROWSER_CONFIG = "browser-guard.json"
 BROWSER_STATE = "browser-guard.state.json"
 
@@ -254,6 +262,73 @@ def set_browser_notify(root: Path, value: object, *, now: int) -> Outcome:
     was = before.get("notify", False)
     return Outcome(True, msg("ctl.notify.on" if notify else "ctl.notify.off"),
                    before=was, after=notify)
+
+
+def set_games_enabled(root: Path, value: object, *, now: int) -> Outcome:
+    enabled = coerce_bool(value, field=msg("field.games_enabled"))
+    before, _ = update_config(Path(root) / GAMES_CONFIG, {"enabled": enabled})
+    was = bool(before.get("enabled", False))
+    return Outcome(True, msg("ctl.games.on" if enabled else "ctl.games.off"),
+                   before=was, after=enabled)
+
+
+def set_games_mode(root: Path, value: object, *, now: int) -> Outcome:
+    """Switch the list between "only these" and "all but these".
+
+    Refused rather than clamped, unlike the sliders: there is no nearest sensible value
+    between an allow list and a deny list, and guessing which one a parent meant is how
+    a filter ends up inverted.
+    """
+    if value not in roblox_games.MODES:
+        raise ControlError(msg("err.games_mode", got=str(value)))
+    before, _ = update_config(Path(root) / GAMES_CONFIG, {"mode": value})
+    was = before.get("mode", roblox_games.MODE_ALLOW)
+    return Outcome(True, msg("ctl.games.mode",
+                             mode=msg(f"games.v.{value}"),
+                             was=msg(f"games.v.{was}" if was in roblox_games.MODES
+                                     else "v.unset")),
+                   before=was, after=value)
+
+
+def coerce_universes(value: object) -> list[int]:
+    """The posted list of universe ids, re-validated here rather than trusted.
+
+    Names are NOT taken from the browser. The page has them, but a name is what the
+    parent will later read the rule by, and letting the client choose it means the file
+    can be made to say "Tycoon Game H" next to any id at all. They are looked up in
+    the guard's own ledger instead.
+    """
+    if not isinstance(value, list):
+        raise ControlError(msg("err.games_list"))
+    if len(value) > GAMES_LIST_MAX:
+        raise ControlError(msg("err.games_toomany", max=GAMES_LIST_MAX, n=len(value)))
+    out: list[int] = []
+    for item in value:
+        # bool first: `True` is an int in Python and would sail through as universe 1.
+        if isinstance(item, bool) or not isinstance(item, int) or item <= 0:
+            raise ControlError(msg("err.games_id", got=str(item)))
+        if item not in out:
+            out.append(item)
+    return sorted(out)
+
+
+def set_games_list(root: Path, value: object, *, now: int) -> Outcome:
+    ids = coerce_universes(value)
+    path = Path(root) / GAMES_CONFIG
+    seen = roblox_games.load_seen(Path(root) / GAMES_SEEN)
+    entries = [{"id": universe,
+                "name": (seen.get(str(universe)) or {}).get("name") or ""}
+               for universe in ids]
+    before, _ = update_config(path, {"universes": entries})
+    was = roblox_games.parse_policy(before)[0].universes
+    added = sorted(set(ids) - was)
+    removed = sorted(was - set(ids))
+    parts = [msg("ctl.games.list", n=len(ids))]
+    if added:
+        parts.append(msg("ctl.games.added", ids=", ".join(str(i) for i in added)))
+    if removed:
+        parts.append(msg("ctl.games.removed", ids=", ".join(str(i) for i in removed)))
+    return Outcome(True, parts, before=sorted(was), after=ids)
 
 
 def _set_delay(path: Path, payload: object, *, label: dict) -> Outcome:
@@ -542,6 +617,9 @@ ACTIONS = {
     "browser_limit_min": set_browser_limit,
     "browser_unlock_min": set_browser_unlock,
     "browser_notify": set_browser_notify,
+    "games_enabled": set_games_enabled,
+    "games_mode": set_games_mode,
+    "games_list": set_games_list,
     "roblox_delay_sec": set_roblox_delay,
     "browser_delay_sec": set_browser_delay,
     "youtube_blocked": set_youtube_blocked,
@@ -558,6 +636,7 @@ def current_values(root: Path, *, now: int, user_rules: list[str] | None = None)
     root = Path(root)
     today = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
     roblox_cfg = read_config(root / ROBLOX_CONFIG)
+    games_policy = roblox_games.parse_policy(read_config(root / GAMES_CONFIG))[0]
     browser_cfg = read_config(root / BROWSER_CONFIG)
     roblox_state, _ = roblox_guard.load_state(root / ROBLOX_STATE, today)
     browser_state, _ = browser_guard.load_state(root / BROWSER_STATE)
@@ -571,6 +650,9 @@ def current_values(root: Path, *, now: int, user_rules: list[str] | None = None)
                              else roblox_guard.DEFAULT_LIMIT_MIN),
         "roblox_bonus_min": (roblox_state.bonus_sec // 60
                              if roblox_state.date == today else 0),
+        "games_enabled": games_policy.enabled,
+        "games_mode": games_policy.mode,
+        "games_list": sorted(games_policy.universes),
         "browser_enabled": bool(browser_cfg.get("enabled", True)),
         # None, not 0: "no budget written" and "a budget of nothing" are different
         # answers, and the page says which one it is looking at.
@@ -617,6 +699,24 @@ def _weakens(action: str, new: object, current: dict) -> bool:
         return coerce_int(new, field="minutes") > 0
     if action == "browser_enabled":
         return not coerce_bool(new, field="enabled")
+    if action == "games_enabled":
+        return not coerce_bool(new, field="enabled")
+    if action == "games_mode":
+        # allow is strictly the tighter of the two: it permits a named handful, deny
+        # permits everything except a named handful. Moving to deny always widens.
+        return new != roblox_games.MODE_ALLOW
+    if action == "games_list":
+        # Which direction widens depends on the mode the list is read in, so the
+        # question is asked about the mode that is CURRENTLY in force - the one the
+        # guard will apply this list under.
+        try:
+            wanted = set(coerce_universes(new))
+        except ControlError:
+            return True
+        current_ids = set(current.get("games_list") or [])
+        if current.get("games_mode") == roblox_games.MODE_DENY:
+            return bool(current_ids - wanted)  # un-banning a game
+        return bool(wanted - current_ids)      # allowing one more game
     if action == "youtube_blocked":
         return not coerce_bool(new, field="blocked")
     if action == "youtube_schedule":

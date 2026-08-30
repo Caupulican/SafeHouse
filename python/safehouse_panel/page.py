@@ -472,6 +472,46 @@ _BODY = """
     </section>
 
     <section>
+      <h2><span data-i18n="lane.games">Jogos do Roblox</span>
+        <span id="pill-games"></span></h2>
+      <div id="lane-games"></div>
+      <div class="grid" style="margin-top:12px">
+
+        <div class="ctl" data-ctl="games_enabled">
+          <div class="ctl-head"><h3 data-i18n="c.games_enabled">Filtro de jogos</h3></div>
+          <label class="switch"><input type="checkbox">
+            <span data-i18n="sw.games"></span></label>
+          <p data-i18n="hint.games_enabled"></p>
+          <div class="act"><button class="primary wide" data-apply
+            data-i18n="b.apply">Aplicar</button></div>
+        </div>
+
+        <div class="ctl" data-ctl="games_mode">
+          <div class="ctl-head"><h3 data-i18n="c.games_mode">Modo</h3></div>
+          <label class="switch"><input type="radio" name="gmode" value="allow">
+            <span data-i18n="games.v.allow"></span></label>
+          <label class="switch"><input type="radio" name="gmode" value="deny">
+            <span data-i18n="games.v.deny"></span></label>
+          <p data-i18n="hint.games_mode"></p>
+          <div class="act"><button class="primary wide" data-apply
+            data-i18n="b.apply">Aplicar</button></div>
+        </div>
+
+        <div class="ctl" data-ctl="games_list" style="grid-column:1/-1">
+          <div class="ctl-head"><h3 data-i18n="c.games_list">A lista</h3>
+            <output>0/0</output></div>
+          <div id="games-list"></div>
+          <p data-i18n="hint.games_list"></p>
+          <p class="note" data-i18n="games.note.samegame"></p>
+          <p class="note" data-i18n="games.note.ceiling"></p>
+          <div class="act"><button class="primary wide" data-apply
+            data-i18n="games.save">Salvar a lista</button></div>
+        </div>
+
+      </div>
+    </section>
+
+    <section>
       <h2><span data-i18n="lane.browser">Navegador</span><span id="pill-browser"></span></h2>
       <div id="lane-browser"></div>
       <div class="grid" style="margin-top:12px">
@@ -735,6 +775,14 @@ async function apply(action,value,password){
 
 function readControl(card){
   if(card.dataset.ctl==='youtube_schedule') return readYtSchedule(card);
+  /* Both of these would be misread by the generic reader below - the mode card's radios
+     and the list card's checkboxes both look like "a checkbox card" to it. */
+  if(card.dataset.ctl==='games_mode'){
+    const on=card.querySelector('input[name=gmode]:checked');
+    return on?on.value:'allow';
+  }
+  if(card.dataset.ctl==='games_list')
+    return $$('#games-list input[type=checkbox]:checked').map(b=>+b.value);
   const box=card.querySelector('input[type=checkbox]');
   if(box) return box.checked;
   const parts=card.querySelectorAll('input[type=range]');
@@ -745,6 +793,14 @@ function readControl(card){
 function paintControl(card,value){
   const key=card.dataset.ctl;
   if(key==='youtube_schedule'){ paintYtSchedule(card); return; }
+  if(key==='games_mode'){
+    const on=card.querySelector('input[name=gmode][value="'+(value||'allow')+'"]');
+    if(on) on.checked=true;
+    return;
+  }
+  /* The list is drawn from the snapshot's catalog, not from this value: the ticks and
+     the rows they sit on arrive together, so painting them apart would flicker. */
+  if(key==='games_list'){ refreshOutputs(card); return; }
   const box=card.querySelector('input[type=checkbox]');
   const ranges=card.querySelectorAll('input[type=range]');
   if(box){ box.checked = !!value; return; }
@@ -759,6 +815,11 @@ function paintControl(card,value){
 
 function refreshOutputs(card){
   const ranges=card.querySelectorAll('input[type=range]'), out=card.querySelector('output');
+  if(card.dataset.ctl==='games_list'){
+    if(out) out.textContent=card.querySelectorAll('input[type=checkbox]:checked').length
+      +'/'+card.querySelectorAll('input[type=checkbox]').length;
+    return;
+  }
   if(ranges.length===2){
     const lo=card.querySelector('[data-val=min]'), hi=card.querySelector('[data-val=max]');
     if(lo) lo.textContent=ranges[0].value+'s';
@@ -861,9 +922,10 @@ function ytChipContext(s){
 }
 function chips(s){
   const lane=k=>s.lanes.find(l=>l.key===k)||{};
-  const rb=lane('roblox'), br=lane('browser');
+  const rb=lane('roblox'), br=lane('browser'), gm=lane('games');
   const items=[
     {k:tr('chip.roblox'),s:rb.status,v:fmt(rb.reason)},
+    {k:tr('chip.games'),s:gm.status,v:fmt(gm.reason)},
     {k:tr('chip.browser'),s:br.status,v:fmt(br.reason)},
     {k:tr('chip.resolver'),s:s.resolver.status,v:fmt(s.resolver.reason)},
     {k:tr('chip.dns'),s:s.dns.status,v:fmt(s.dns.reason)},
@@ -901,6 +963,32 @@ function gapsBlock(gaps){
 }
 
 /* ---- Regras: one panel per lane, status + controls together ---- */
+/* ---- the game list ----
+   One row per experience the guard has ever seen, newest first, ticked when it is on
+   the list. A row whose universe the client log never gave up is shown but cannot be
+   ticked: an allow list has nothing to key it on, and hiding it would leave the parent
+   wondering why Roblox closed on a game that is not in front of him. */
+function gamesRows(g){
+  if(!g||!g.catalog||!g.catalog.length)
+    return '<div class="note">'+esc(fmtT({k:'games.empty'}))+'</div>';
+  return g.catalog.map(r=>{
+    const name=r.name||('universe '+esc(r.key));
+    const seen=esc((r.last||'').replace('T',' '));
+    /* The rating rides in the row rather than in a tooltip: the whole point is that it
+       is in front of the parent at the moment he decides, not one tap away. */
+    const mat=esc(fmtT({k:r.maturity?('games.mat.'+r.maturity):'games.mat.unknown'}));
+    const badge='<b class="'+(r.over?'s-DEGRADED':'s-ACTIVE')+'">'+mat+'</b> \u00b7 ';
+    const meta=badge+esc(fmtT({k:'games.joins',p:{n:r.joins}}))+(seen?' \u00b7 '+seen:'');
+    if(r.id===null)
+      return '<label class="switch"><input type="checkbox" disabled>'
+        +'<span>'+esc(name)+' <span class="hint">'
+        +esc(fmtT({k:'games.unidentified'}))+'</span></span></label>';
+    return '<label class="switch"><input type="checkbox" value="'+r.id+'"'
+      +(r.listed?' checked':'')+'><span>'+esc(name)
+      +' <span class="hint">'+meta+'</span></span></label>';
+  }).join('');
+}
+
 function lanePanel(l){
   const facts=l.facts.map(f=>row(fmt(f.label),fmt(f.value))).join('');
   const t=l.task, when=t.last_run?esc(t.last_run):tr('v.never');
@@ -1014,9 +1102,17 @@ function render(s){
   $('#resolver').innerHTML=resolverBlock(s.resolver);
   $('#gaps').innerHTML=gapsBlock(s.gaps);
   const lane=k=>s.lanes.find(l=>l.key===k)||{facts:[],task:{},notes:[]};
-  const rb=lane('roblox'), br=lane('browser');
+  const rb=lane('roblox'), br=lane('browser'), gm=lane('games');
   $('#pill-roblox').innerHTML=pill(rb.status);
   $('#lane-roblox').innerHTML=lanePanel(rb);
+  $('#pill-games').innerHTML=pill(gm.status);
+  $('#lane-games').innerHTML=lanePanel(gm);
+  /* Redrawing the rows under a parent who is mid-edit would throw their ticks away, so
+     a dirty list keeps what is on screen until it is applied or the page is reloaded. */
+  if(!dirty.has('games_list')){
+    $('#games-list').innerHTML=gamesRows(s.games);
+    refreshOutputs($('[data-ctl=games_list]'));
+  }
   $('#pill-browser').innerHTML=pill(br.status);
   $('#lane-browser').innerHTML=lanePanel(br);
   $('#pill-youtube').innerHTML=pill((s.dns.youtube||{}).user_rules);

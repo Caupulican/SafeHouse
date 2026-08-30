@@ -39,6 +39,7 @@ from .i18n import msg
 ACTIVE, OFF, DEGRADED, UNKNOWN = "ACTIVE", "OFF", "DEGRADED", "UNKNOWN"
 
 ROBLOX_TASK = "SafeHouse-RobloxBudget"
+GAMES_TASK = "SafeHouse-RobloxGames"
 BROWSER_TASK = "SafeHouse-BrowserGuard"
 PANEL_TASK = "SafeHouse-Panel"
 RESOLVER_TASK = "SafeHouse-Resolver"
@@ -255,6 +256,48 @@ def roblox_lane(*, config: dict, config_defect: str | None, state: dict,
                  task=task, off_reason=None, suspended_reason=None,
                  defects=[config_defect] if config_defect else [],
                  facts=facts, summary=log, notes=notes)
+
+
+def games_lane(*, policy: dict, fault: str | None, seen: int, task: dict, log: dict,
+               now: int) -> dict:
+    """The per-GAME Roblox lane - which experiences may run, not for how long.
+
+    Two things here read the opposite way to the budget lane next door, and both are
+    deliberate:
+
+    * an **empty list is not the strict setting**. For the budget, zero minutes is the
+      tightest thing the control can say and is shown as ACTIVE. Here, an empty list
+      switched on ends every experience including the ones the parent agreed to - that
+      is a misconfiguration wearing enforcement's clothes, so it shows as DEGRADED with
+      the reason spelled out.
+    * **off is off.** Unlike the budget's zero, a disabled game filter is genuinely not
+      enforcing anything, and the card says so rather than implying a rule is in place.
+    """
+    enabled = bool(policy.get("enabled"))
+    mode = policy.get("mode", "allow")
+    listed = list(policy.get("universes") or [])
+    notes = []
+    if enabled and mode == "allow" and not listed:
+        notes.append(msg("games.note.emptyallow"))
+    if not enabled:
+        notes.append(msg("games.note.off"))
+    facts = [
+        {"label": msg("fact.games_mode"),
+         "value": msg("games.v.allow" if mode == "allow" else "games.v.deny")},
+        {"label": msg("fact.games_listed"), "value": f"{len(listed)}"},
+        {"label": msg("fact.games_seen"), "value": f"{seen}"},
+        {"label": msg("fact.closed"), "value": f"{log['events_today']}"},
+    ]
+    return _lane(
+        key="games", label=msg("lane.games"), how=msg("lane.how.games"), task=task,
+        # A FAULT outranks "off", and that ordering is the point: an unreadable config
+        # leaves `enabled` false by default, so reporting it as OFF would tell a parent
+        # who just edited the file that his filter is merely switched off - burying the
+        # only thing he needs to know, which is that the file no longer parses.
+        off_reason=None if (enabled or fault) else msg("games.reason.off"),
+        suspended_reason=(msg("games.reason.emptyallow")
+                          if enabled and mode == "allow" and not listed else None),
+        defects=[fault] if fault else [], facts=facts, summary=log, notes=notes)
 
 
 def browser_lane(*, config: dict, config_defects: list[str], state: dict, task: dict,

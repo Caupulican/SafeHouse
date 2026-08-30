@@ -2,7 +2,7 @@
 
 Roblox is the most-played thing on this machine, and it is not a game — it is a
 platform where anyone can publish content and, by default, anyone can talk to a child.
-The threat model for an 8-year-old is, in order: **stranger contact via chat**, exposure
+The threat model for a 9-year-old is, in order: **stranger contact via chat**, exposure
 to unmoderated experiences, spending, and only then advertising. DNS can enforce some of
 this; the account settings enforce the rest. Neither alone is enough, and — as
 everywhere in SafeHouse — each control lists how to *verify* it, because a control that
@@ -16,11 +16,11 @@ them: chat and content maturity are decided server-side per account.
 | Setting | Policy | Why |
 |---|---|---|
 | Linked parent account + settings PIN | **Required** | child has local admin on the PC by choice; the PIN is what stops settings drifting back |
-| Account birthdate | **Real age (8)** | Drives ad removal (Roblox does not serve ads to under-13s), chat defaults, content defaults |
-| Content maturity | **Minimal** | Filters moderate/restricted experiences from discovery and join |
+| Account birthdate | **Real age (9 as of 2026-08-30)** | Drives ad removal (Roblox does not serve ads to under-13s), chat defaults, content defaults. Still under 13, so nothing about this changed when he turned 9 — but the birthdate on the account must be the real one, not a stale one. |
+| Content maturity | **Mild** — raised from Minimal on 2026-08-30, the parent's call at age 9 | Filters moderate/restricted experiences from discovery and join. See Layer 4: this setting was measured **not enforcing** on this account. |
 | Chat | **Fully off** — no platform chat, no in-experience chat | The single highest-risk feature for this age; the games all remain playable |
 | Who can message / invite / join me | **No one** | Belt-and-suspenders once chat is off |
-| Voice chat | **Off** (should be impossible at age 8 anyway) | Also hard-blocked at DNS — see Layer 2 |
+| Voice chat | **Off** (should be impossible under 13 anyway) | Also hard-blocked at DNS — see Layer 2 |
 | Spending | **Purchases blocked** (or hard monthly cap) | Robux prompts are pervasive in-experience |
 | Daily screen time (Roblox-native) | **Lowest value Roblox offers** | The standing allowance is 0 min/day (see Layer 3) and Roblox's own control cannot express zero; set it as low as it goes so the account-side lane still helps on devices this repo does not manage |
 
@@ -175,6 +175,187 @@ above 240 minutes therefore **cannot be shown or written from the panel** — th
 pins to 240, and a parent who touches it and presses Aplicar silently cuts the grant to
 four hours. Grant and revoke a full-day allowance in the file, or keep the grant inside
 240 minutes so the panel stays truthful.
+
+## Layer 4 — which games, not how long (LIVE, ships OFF)
+
+Layer 3 answers *for how long*. This one answers *which*, and the two are independent
+tasks with independent config so that standing one down does not touch the other.
+
+### Why the process table cannot do it
+
+Every experience on the platform runs as the same `RobloxPlayerBeta.exe`. Image name,
+command line and window title are identical for a tycoon and for a horror game — so the
+signal every other kill lane uses cannot tell them apart. The client's own log can.
+Verified against Roblox **0.736.0** on this machine on 2026-08-30, a join writes:
+
+```
+[FLog::Output] ! Joining game '<jobId>' place 88083000467860 at 10.34.1.86
+[FLog::GameJoinLoadTime] Report game_join_loadtime: placeid:88083000467860,
+    join_time:0.669, universeid:9681996188, referral_page:, sid:..., userid:...
+```
+
+and leaving writes `[FLog::SingleSurfaceApp] leaveUGCGameInternal`. Two consequences:
+
+* the **universeid is in the log**, so the enforcing path needs no network call, no API
+  key and no place→universe lookup. It keeps working with the internet down;
+* one join writes **two** lines, the plainer one first. Reading them as two events
+  double-counts every session and makes the universe flicker in and out — the parser
+  folds them.
+
+### Match on the universe, never the place
+
+A *game* is a universe; a *place* is one map inside it, and teleporting between maps
+keeps the process and writes a fresh join line with a different place. Two of the
+fourteen games in this machine's own history do exactly that:
+
+| Universe | Game | Places seen |
+|---|---|---|
+| `4807308814` | Story Game A | `13864661000`, `13864667823` |
+| `2955322961` | Obby Game B | `7606564092`, `88604154038333` |
+
+A place-keyed list would have allowed the lobby and killed the level.
+
+### Shape
+
+Resident, ~3s poll, SYSTEM — and each of those three differs from the budget lane for a
+reason:
+
+| | Layer 3 (budget) | Layer 4 (games) |
+|---|---|---|
+| Shape | one-shot, every minute | **resident loop** |
+| Why | a minute of overtime is a rounding error | a minute of a banned game per launch is a **loophole** — quit, re-join, farm another minute |
+| Principal | SYSTEM | SYSTEM (it kills, and it must read *every* profile's log) |
+| Input | `tasklist` | `%LOCALAPPDATA%\Roblox\logs\*_Player_*.log`, tailed |
+
+The idle path still touches nothing: a tick is one directory listing, and when nothing
+has been appended it stops there. `tasklist` is spawned only on a tick that has already
+decided to kill.
+
+### Config, and how it fails
+
+`roblox-games.json`:
+
+```json
+{ "enabled": true, "mode": "allow",
+  "universes": [{"id": 10342266608, "name": "Tycoon Game H"}],
+  "notify": false, "delay_min_sec": 1, "delay_max_sec": 5 }
+```
+
+| Situation | What happens |
+|---|---|
+| Unlisted universe, `allow` mode | **killed** — the point of the lane |
+| Universe unreadable from the log | killed under `allow`, spared under `deny` — unknown resolves to *enforce the rule*, never to a guess |
+| Config **missing** | lane asleep. It is opt-in, and installing it must not brick Roblox on a machine nobody configured |
+| Config **broken** | falls back to the **last good policy this process parsed**; nothing, if there has never been one. Logged every episode and shown in the panel as a fault |
+| `allow` mode, empty list | ends *every* experience. Legal, and said out loud in the log and on the card — it is also what an emptied-by-accident list looks like |
+
+The broken-config fallback is the one place this repo does **not** fail to the strictest
+setting. The strict fallback here would be "no game at all", enforced in a loop, because
+of a stray comma in Notepad — a policy nobody wrote down. It shouts instead.
+
+### Building the list
+
+Nobody can write an allow list for a platform with sixty million experiences on it.
+`--history` reads every client log still on disk and prints what was actually played:
+
+```
+python -m safehouse_ytbudget.roblox_games --history
+```
+
+It also seeds `roblox-games.seen.json`, the ledger the panel draws its checkboxes from.
+The guard appends to that ledger as it observes joins — **joins, never minutes**: time
+played is Layer 3's number, and a second clock here would eventually disagree with it in
+front of a parent trying to decide something.
+
+In the panel, the **Jogos do Roblox** card carries the switch, the mode, and one ticked
+row per game seen, newest first. Ticking a game under an allow list is a *weakening*, so
+it asks for the password again; under a deny list the direction reverses and the panel
+knows it.
+
+### Content maturity — a label, not a control
+
+Roblox rates every experience (`minimal` / `mild` / `moderate` / `restricted`). The only
+public surface carrying it is the omni-search API, so `roblox_games.fetch_maturity` looks
+each game up **by name** and accepts the answer only when the universe id matches. It is
+**curation-time only** — the kill path never touches the network, because a filter that
+opens up when DNS breaks is not a filter.
+
+Measured against this machine's own history on **2026-08-30**, two results decide how it
+is used:
+
+| Measurement | Consequence |
+|---|---|
+| **7 of the 15 games played are rated `mild`** — above the account's documented "Minimal" setting — and Roblox started them anyway | Layer 1's content maturity is **not enforcing on this account**. Re-verify it; do not rely on it. |
+| **"Horror Game F"** — the horror one — is rated **`minimal`** | A maturity ceiling would not have caught the first game a parent objected to. |
+
+So the rating is **shown, never trusted**: `max_maturity` (default `minimal`) produces a
+note on the card and a line in `--status` for any listed game above it, and the game still
+runs. The list wins. Refusing to enforce a list the parent wrote would be this code
+deciding it knows better than the person who set the rule.
+
+The mild ones, for the record: `Idle Game J`, `Builder Game K`, `Escape Game L`,
+`Tycoon Game C`, `Story Game A`, `Obby Game B`, `Shooter Game D`.
+
+### "Block anything the content filter does not cover"
+
+Under `mode: "allow"` this is already true **by construction**: nothing that is not
+explicitly ticked ever runs, so every unrated, mild, moderate and restricted experience
+is ended whether or not anyone thought about it. The maturity work above exists to make
+the *curation* informed, not to add a second gate. Under `mode: "deny"` the property does
+not hold — that mode permits everything it has not been told about — which is why `allow`
+is the documented default for a young child.
+
+### As deployed, 2026-08-30
+
+`SafeHouse-RobloxGames` armed at 14:30 BRT, `mode: allow`, ceiling `mild`, **26 games**.
+Two unattended kills on the first afternoon, both correct:
+
+| Time | Game | Rating |
+|---|---|---|
+| 14:30:22 | Mining Game I | `minimal` (since added to the list) |
+| 18:18:12 | **Horror Game E** — horror chase, 5.0B visits | **`mild`** |
+
+Horror Game E is the one to remember: it is *inside* the `mild` ceiling and was stopped
+only because it is not on the list. A maturity setting alone would have let it run. **The
+list is the control; the rating is a label.**
+
+The list was curated from what the child actually plays, not from a genre browse. Two
+days of his own history, 359 minutes over 17 games:
+
+| Category | min | Share |
+|---|---|---|
+| Tycoon / manage | 133 | 37% |
+| Upgrade & idle loops (incl. the two "mining sandbox" games) | 123 | 34% |
+| Survival / combat | 54 | 15% |
+| Horror / chase story | 34 | 9% |
+| Party minigame | 15 | 4% |
+| **Genuine construction sandbox** | **0** | **0%** |
+
+That last row is the point of the list. Sandbox Game M, Sandbox Game N, Build A
+Plane and Tycoon Game P are all on it and none has been opened yet; the shallow
+versions he already likes were **kept, not removed**, because a list that deletes a
+child's favourites gets argued with and a list that quietly grows better neighbours does
+not. The daily budget in Layer 3 is what limits *how much*.
+
+Beware the genre tag when curating: `Simulation/Sandbox` covers both Sandbox Game M (a real
+physics sandbox) and "Mining Game I" / "Mining Game Q" (dig-and-upgrade
+loops). Read the description, not the label.
+
+### Honest limits
+
+* the kill ends the **whole client**, not one experience — he lands on the desktop, not
+  on the Roblox home page. Re-opening into an allowed game is immediate;
+* there is a few-second window between the join and the kill. He sees the loading
+  screen, sometimes the spawn point;
+* the log is his own file and he has local admin. Roblox running while its log has gone
+  silent is logged as `[warn] blind` rather than read as an all-clear;
+* the Microsoft Store build logs elsewhere. That path is included **best-effort and
+  untested** — no Store install exists here.
+
+**Verify:** `--status` prints the policy; `--once` reads the live log and prints the
+verdict without killing anything; then tick a game off in the panel, join it, and Roblox
+must close within a few seconds — `roblox-games.log` names the game and the reason.
+Also verify the quiet path: with Roblox closed, the log must not grow.
 
 ## What is deliberately NOT blocked
 

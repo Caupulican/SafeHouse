@@ -30,6 +30,7 @@ from safehouse_ytbudget import config as configmod  # noqa: E402
 LIVE_TASK = "SafeHouse-YouTubeBudget-Py"
 SHADOW_TASK = "SafeHouse-YouTubeBudget-PyShadow"
 ROBLOX_TASK = "SafeHouse-RobloxBudget"
+GAMES_TASK = "SafeHouse-RobloxGames"
 BROWSER_TASK = "SafeHouse-BrowserGuard"
 PLAYGAMES_TASK = "SafeHouse-PlayGamesGuard"
 VOLUME_TASK = "SafeHouse-VolumeGuard"
@@ -348,6 +349,33 @@ def register_roblox_guard(*, python: Path, workdir: Path) -> bool:
     )
 
 
+def register_roblox_games(*, python: Path, workdir: Path) -> bool:
+    """The per-GAME Roblox lane - resident, and SYSTEM rather than the child's session.
+
+    Two shapes are in play here and picking the wrong one breaks the lane:
+
+    * RESIDENT (TASK_XML, the watcher's shape: infinite loop, no execution time limit,
+      RestartOnFailure) and not GUARD_TASK_XML's one-shot-every-minute, because a minute
+      of grace per launch is not a latency on a ban - it is a loophole the child can farm
+      by quitting and re-joining. Seconds are the point of this lane.
+    * SYSTEM, unlike the volume ceiling next door which runs as the child. That one reads
+      one number and kills nothing; this one calls taskkill, so it takes the same
+      principal as the other kill lanes - and SYSTEM can read EVERY profile's Roblox log,
+      which is what stops a second local account being a one-click bypass.
+
+    BootTrigger only, so `start=True` is what gets it running on install day.
+    """
+    return register_task(
+        name=GAMES_TASK, python=python,
+        arguments="-m safehouse_ytbudget.roblox_games", workdir=workdir,
+        description=("SafeHouse Roblox game filter - reads the client log for the "
+                     "universe being played and ends Roblox when it is not the one "
+                     "agreed (the process name is identical for every experience, so "
+                     "the log is the only thing that can tell them apart)"),
+        start=True, xml_template=TASK_XML,
+    )
+
+
 def register_browser_guard(*, python: Path, workdir: Path) -> bool:
     """The no-browsing kill lane - the same repeating one-shot as the Roblox lane.
 
@@ -612,6 +640,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--roblox-guard-only", action="store_true",
                    help="register only the Roblox kill-lane task; touches nothing else "
                         "(no watcher, no config render, no task retirement)")
+    p.add_argument("--roblox-games-only", action="store_true",
+                   help="register only the per-game Roblox filter task; touches nothing "
+                        "else")
     p.add_argument("--browser-guard-only", action="store_true",
                    help="register only the browser kill-lane task; touches nothing else "
                         "(no watcher, no config render, no task retirement)")
@@ -644,6 +675,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.roblox_guard_only:
         print(f"[*] Registering scheduled task {ROBLOX_TASK}...")
         return 0 if register_roblox_guard(python=args.python, workdir=pkg_dir) else 1
+
+    if args.roblox_games_only:
+        print(f"[*] Registering scheduled task {GAMES_TASK}...")
+        return 0 if register_roblox_games(python=args.python, workdir=pkg_dir) else 1
 
     if args.browser_guard_only:
         print(f"[*] Registering scheduled task {BROWSER_TASK}...")
@@ -681,6 +716,19 @@ def main(argv: list[str] | None = None) -> int:
     # as the child's own doing rather than a kill.
     print("    " + seed_json(args.root / "roblox-budget.json", {
         "limit_min": 0,
+        "delay_min_sec": 1,
+        "delay_max_sec": 5,
+    }))
+    # The per-game filter ships OFF with an empty list, and that is not timidity: an
+    # allow list is the one thing here nobody but the parent can author, and an empty one
+    # switched on would end every experience on the machine. `--history` prints what the
+    # child actually plays, which is where the list comes from.
+    print("    " + seed_json(args.root / "roblox-games.json", {
+        "enabled": False,
+        "mode": "allow",
+        "universes": [],
+        "notify": False,
+        "message": "",
         "delay_min_sec": 1,
         "delay_max_sec": 5,
     }))
@@ -742,6 +790,10 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"[*] Registering scheduled task {ROBLOX_TASK}...")
     if not register_roblox_guard(python=args.python, workdir=pkg_dir):
+        return 1
+
+    print(f"[*] Registering scheduled task {GAMES_TASK}...")
+    if not register_roblox_games(python=args.python, workdir=pkg_dir):
         return 1
 
     print(f"[*] Registering scheduled task {BROWSER_TASK}...")

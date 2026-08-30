@@ -899,6 +899,111 @@ _STRINGS: dict[str, tuple[str, str]] = {
                    "a senha - se conseguisse, quem abrisse esta página primeiro seria "
                    "dono do painel. Depois de entrar, você pode alterá-la em <b>Acesso "
                    "ao painel</b>, que pede a senha atual."),
+
+    # --- the per-game Roblox lane -------------------------------------------
+    # The vocabulary here is deliberately NOT the vocabulary of the budget card. The
+    # parent has to be able to tell "no time left" from "not this game" at a glance on a
+    # phone, and two cards both saying "Roblox / blocked" would make that impossible.
+    "lane.games": ("Roblox games", "Jogos do Roblox"),
+    "lane.how.games": ("reads the game's own log and ends Roblox when the experience "
+                       "is not on the list",
+                       "lê o log do próprio jogo e encerra o Roblox quando a "
+                       "experiência não está na lista"),
+    "games.v.allow": ("only the listed games", "só os jogos da lista"),
+    "games.v.deny": ("all games except the listed ones",
+                     "todos os jogos, menos os da lista"),
+    "games.reason.off": ("the game filter is off - any experience may run",
+                         "o filtro de jogos está desligado - qualquer experiência pode "
+                         "rodar"),
+    "games.reason.emptyallow": ("the list is empty and the mode is \"only the listed "
+                                "games\", so EVERY experience will be ended",
+                                "a lista está vazia e o modo é \"só os jogos da "
+                                "lista\", então TODA experiência será encerrada"),
+    "games.note.emptyallow": ("Add at least one game, or switch the mode - as it "
+                              "stands, Roblox closes on every join.",
+                              "Adicione pelo menos um jogo, ou troque o modo - do "
+                              "jeito que está, o Roblox fecha em toda entrada."),
+    "games.note.off": ("Nothing here is enforced while the filter is off. The daily "
+                       "time budget is a separate lane and still applies.",
+                       "Nada aqui vale enquanto o filtro está desligado. O limite "
+                       "diário de tempo é outra proteção e continua valendo."),
+    "games.note.samegame": ("A game can have several maps. The list is keyed on the "
+                            "GAME, so moving between maps of an allowed game is fine.",
+                            "Um jogo pode ter vários mapas. A lista é por JOGO, então "
+                            "andar entre mapas de um jogo liberado não é problema."),
+    "fact.games_mode": ("Mode", "Modo"),
+    "fact.games_listed": ("Games on the list", "Jogos na lista"),
+    "fact.games_seen": ("Games seen so far", "Jogos vistos até agora"),
+    "field.games_enabled": ("game filter", "filtro de jogos"),
+    "ctl.games.on": ("The game filter is ON.", "O filtro de jogos está LIGADO."),
+    "ctl.games.off": ("The game filter is OFF - any Roblox experience may run.",
+                      "O filtro de jogos está DESLIGADO - qualquer experiência do "
+                      "Roblox pode rodar."),
+    "ctl.games.mode": ("Mode is now \"{mode}\" (was \"{was}\").",
+                       "O modo agora é \"{mode}\" (era \"{was}\")."),
+    "ctl.games.list": ("The list now holds {n} game(s).",
+                       "A lista agora tem {n} jogo(s)."),
+    "ctl.games.added": ("Added: {ids}.", "Adicionados: {ids}."),
+    "ctl.games.removed": ("Removed: {ids}.", "Removidos: {ids}."),
+    "err.games_mode": ("The mode must be \"allow\" or \"deny\", not {got}.",
+                       "O modo tem de ser \"allow\" ou \"deny\", não {got}."),
+    "err.games_list": ("The list of games must be a list of universe ids.",
+                       "A lista de jogos tem de ser uma lista de ids de universo."),
+    "err.games_toomany": ("{n} games is more than the {max} this panel accepts.",
+                          "{n} jogos é mais do que os {max} que este painel aceita."),
+    "err.games_id": ("{got} is not a universe id. Ids are whole numbers above zero.",
+                     "{got} não é um id de universo. Ids são números inteiros maiores "
+                     "que zero."),
+    "chip.games": ("Roblox games", "Jogos do Roblox"),
+    "c.games_enabled": ("Game filter", "Filtro de jogos"),
+    "c.games_mode": ("Mode", "Modo"),
+    "c.games_list": ("The list", "A lista"),
+    "sw.games": ("Only let the agreed games run",
+                 "Deixar rodar só os jogos combinados"),
+    "hint.games_enabled": ("Separate from the daily time budget. This one decides "
+                           "WHICH games, that one decides FOR HOW LONG - and both have "
+                           "to pass.",
+                           "Separado do limite diário de tempo. Este decide QUAIS "
+                           "jogos, aquele decide POR QUANTO TEMPO - e os dois têm de "
+                           "aprovar."),
+    "hint.games_mode": ("\"Only the listed games\" is the tight one and the right "
+                        "default for a young child. \"All except\" only helps against "
+                        "a game you already know the name of.",
+                        "\"Só os da lista\" é o modo apertado e o certo para criança "
+                        "pequena. \"Todos menos\" só ajuda contra um jogo que você já "
+                        "sabe o nome."),
+    "hint.games_list": ("The games below are the ones actually opened on this PC, "
+                        "newest first. Ticking one takes effect within seconds - "
+                        "Roblox closes the moment a game that is not allowed loads, so "
+                        "he sees the loading screen and then the desktop.",
+                        "Os jogos abaixo são os que realmente foram abertos neste PC, "
+                        "do mais recente para o mais antigo. Marcar um vale em poucos "
+                        "segundos - o Roblox fecha assim que carrega um jogo que não "
+                        "está liberado, então ele vê a tela de carregamento e depois a "
+                        "área de trabalho."),
+    "games.empty": ("No games recorded yet. They appear here the first time each one "
+                    "is opened.",
+                    "Nenhum jogo registrado ainda. Eles aparecem aqui na primeira vez "
+                    "que cada um for aberto."),
+    "games.unidentified": ("the game's log did not say which experience this was",
+                           "o log do jogo não disse qual experiência era esta"),
+    "games.joins": ("{n} time(s)", "{n} vez(es)"),
+    "games.save": ("Save the list", "Salvar a lista"),
+    "games.mat.minimal": ("Minimal", "Mínimo"),
+    "games.mat.mild": ("Mild", "Leve"),
+    "games.mat.moderate": ("Moderate", "Moderado"),
+    "games.mat.restricted": ("Restricted", "Restrito"),
+    "games.mat.unknown": ("not rated", "sem classificação"),
+    "games.note.ceiling": ("Roblox rates each experience. Anything above the ceiling is "
+                           "marked here and still runs if you ticked it - your list "
+                           "wins. Measured on 2026-08-30: <b>7 of the 15 games already "
+                           "played are rated Mild</b>, above the account's Minimal "
+                           "setting, and Roblox let them start anyway.",
+                           "O Roblox classifica cada experiência. O que passa do teto "
+                           "fica marcado aqui e continua rodando se você marcou - sua "
+                           "lista manda. Medido em 30/08/2026: <b>7 dos 15 jogos já "
+                           "jogados são classificados como Leve</b>, acima do ajuste "
+                           "Mínimo da conta, e o Roblox deixou abrir mesmo assim.")
 }
 
 CATALOG: dict[str, dict[str, str]] = {

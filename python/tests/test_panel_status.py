@@ -356,12 +356,19 @@ def test_a_snapshot_of_a_bare_machine_reports_unknown_rather_than_crashing(tmp_p
     monkeypatch.setattr(collect, "read_tasks", lambda: None)
     monkeypatch.setattr(collect, "read_browser_policy", lambda: None)
     snapshot = collector(tmp_path, monkeypatch, lambda: 0.0).snapshot()
-    assert [lane["status"] for lane in snapshot["lanes"]] == [status.UNKNOWN,
-                                                              status.UNKNOWN]
+    # Every lane, whatever the list grows to: on a machine where Task Scheduler cannot
+    # be read, no lane may claim to know whether it is enforcing.
+    assert {lane["status"] for lane in snapshot["lanes"]} == {status.UNKNOWN}
+    assert {lane["key"] for lane in snapshot["lanes"]} == {"roblox", "games", "browser"}
     assert snapshot["dns"]["status"] == status.UNKNOWN
     assert snapshot["policy"]["status"] == status.UNKNOWN
     assert snapshot["probes"] is None          # probes are on demand, never on a poll
     assert snapshot["controls"]["values"]["roblox_limit_min"] == 0
+    # The game filter ships off with nothing listed, and a bare machine must read that
+    # way rather than as an empty allow list that would end every experience.
+    assert snapshot["controls"]["values"]["games_enabled"] is False
+    assert snapshot["controls"]["values"]["games_list"] == []
+    assert snapshot["games"]["catalog"] == []
 
 
 def test_yesterdays_usage_is_not_charged_against_today(tmp_path, monkeypatch):

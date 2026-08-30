@@ -20,7 +20,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from safehouse_ytbudget import browser_guard, roblox_guard
+from safehouse_ytbudget import browser_guard, roblox_games, roblox_guard
 from safehouse_setup import resolver
 from safehouse_ytbudget.platform.adguard import AdGuardClient, AdGuardConfig
 
@@ -198,7 +198,9 @@ class Collector:
         tasks = self._cached("tasks", TASK_TTL_SEC,
                              lambda: statusmod.parse_tasks(read_tasks()))
 
-        lanes = [self._roblox_lane(tasks, now, today), self._browser_lane(tasks, now, today)]
+        lanes = [self._roblox_lane(tasks, now, today),
+                 self._games_lane(tasks, now, today),
+                 self._browser_lane(tasks, now, today)]
         client = self.client()
         return {
             "now": clock,
@@ -212,6 +214,7 @@ class Collector:
             "resolver": self._resolver(tasks, now),
             "tasks": statusmod.task_rows(tasks),
             "dns": self._dns(client),
+            "games": self._games_catalog(),
             "youtube_schedule": schedmod.view(
                 *controls.read_youtube_schedule(self.root), now=now),
             "probes": self.probes,
@@ -243,6 +246,78 @@ class Collector:
         if state_warning:
             lane["notes"].append(state_warning)
         return lane
+
+    def _games_lane(self, tasks, now: int, today: str) -> dict:
+        policy, warnings, fault = roblox_games.load_policy(
+            self.root / controls.GAMES_CONFIG, None)
+        log = statusmod.log_summary(tail(self.root / "roblox-games.log"), today=today)
+        lane = statusmod.games_lane(
+            policy={"enabled": policy.enabled, "mode": policy.mode,
+                    "universes": sorted(policy.universes)},
+            # The FAULT is what makes the lane degraded; the other warnings are notes.
+            # An unreadable config here means the guard is holding a policy the parent
+            # cannot see in the file, which is exactly the thing to surface loudly.
+            fault=(warnings[0] if fault and warnings else None),
+            seen=len(roblox_games.load_seen(self.root / controls.GAMES_SEEN)),
+            task=statusmod.task_view(statusmod.GAMES_TASK, tasks), log=log, now=now)
+        if not fault:
+            lane["notes"].extend(warnings)
+        # A game the parent listed that is rated above his own ceiling: shown every
+        # time, never acted on. See roblox_games.flag_ceiling for why it is a report.
+        lane["notes"].extend(roblox_games.flag_ceiling(
+            policy, roblox_games.load_seen(self.root / controls.GAMES_SEEN),
+            roblox_games.load_ratings(self.root / controls.GAMES_RATINGS)))
+        return lane
+
+    def _games_catalog(self) -> dict:
+        """Every game the guard has ever seen, with a tick against the allowed ones.
+
+        This is what turns an unusable control into a usable one. Nobody can type
+        universe ids for a platform this size; everybody can tick the fourteen games
+        their child opened this week, which is what the ledger holds.
+        """
+        policy, _, _ = roblox_games.load_policy(self.root / controls.GAMES_CONFIG, None)
+        seen = roblox_games.load_seen(self.root / controls.GAMES_SEEN)
+        # The ratings cache, second source after the ledger. Without it a game the parent
+        # added by hand - a curated list he has never played - shows as "not rated" and
+        # therefore red, which is exactly backwards for the games chosen most carefully.
+        rated = roblox_games.load_ratings(self.root / controls.GAMES_RATINGS)
+
+        def maturity_of(key: str, entry: dict | None = None) -> str:
+            return str((entry or {}).get("maturity") or rated.get(key) or "")
+
+        catalog = []
+        for key, entry in seen.items():
+            universe = int(key) if key.isdigit() else None
+            catalog.append({
+                "id": universe,
+                # A join the client logged without a universeid keeps its place key, so
+                # the row is still visible and still says what it was - it just cannot
+                # be ticked, because an allow list has nothing to key on.
+                "key": key,
+                "name": entry.get("name") or "",
+                "joins": int(entry.get("joins") or 0),
+                "places": entry.get("places") or [],
+                "first": entry.get("first") or "",
+                "last": entry.get("last") or "",
+                "listed": universe is not None and universe in policy.universes,
+                "maturity": maturity_of(key, entry),
+                "over": roblox_games.above_ceiling(maturity_of(key, entry),
+                                                   policy.max_maturity),
+            })
+        catalog.sort(key=lambda row: row["last"], reverse=True)
+        # Anything listed but never seen (hand-edited, or its logs have rotated away)
+        # would otherwise be invisible in the page while still governing the rule.
+        known = {row["id"] for row in catalog}
+        for universe in sorted(policy.universes - known):
+            catalog.append({"id": universe, "key": str(universe),
+                            "name": policy.names.get(universe, ""), "joins": 0,
+                            "places": [], "first": "", "last": "", "listed": True,
+                            "maturity": maturity_of(str(universe)),
+                            "over": roblox_games.above_ceiling(
+                                maturity_of(str(universe)), policy.max_maturity)})
+        return {"enabled": policy.enabled, "mode": policy.mode,
+                "ceiling": policy.max_maturity, "catalog": catalog}
 
     def _browser_lane(self, tasks, now: int, today: str) -> dict:
         config_path = self.root / controls.BROWSER_CONFIG
