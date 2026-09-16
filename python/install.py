@@ -34,6 +34,7 @@ GAMES_TASK = "SafeHouse-RobloxGames"
 BROWSER_TASK = "SafeHouse-BrowserGuard"
 PLAYGAMES_TASK = "SafeHouse-PlayGamesGuard"
 VOLUME_TASK = "SafeHouse-VolumeGuard"
+MIC_TASK = "SafeHouse-MicGuard"
 PANEL_TASK = "SafeHouse-Panel"
 RESOLVER_TASK = "SafeHouse-Resolver"
 # 8080 is already in use on this machine, and 8443 would advertise a TLS service the
@@ -513,6 +514,30 @@ def register_volume_guard(*, python: Path, workdir: Path, user: str = "") -> boo
     )
 
 
+def register_mic_guard(*, python: Path, workdir: Path, user: str = "") -> bool:
+    """Every microphone muted - the third task in the user's session, and RESIDENT.
+
+    Same shape and the same reasoning as the volume ceiling next door: in the user's
+    session because the capture endpoints being muted are the ones on his own machine,
+    and deliberately AS the child rather than SYSTEM, because the lane kills nothing and
+    needs no stronger token than the person whose microphone it minds.
+    USER_LOOP_TASK_XML, not USER_TASK_XML, because the 15-minute execution ceiling that
+    reaps a wedged resolver run would terminate this loop mid-shift and hand back an open
+    microphone; the repetition stays as the resurrection watchdog (IgnoreNew makes it a
+    no-op while the loop is healthy). `pythonw.exe` for the same reason as the others: a
+    console window on the child's screen is the posture giving itself away.
+    """
+    return register_task(
+        name=MIC_TASK, python=windowless(python),
+        arguments="-m safehouse_ytbudget.mic_guard", workdir=workdir,
+        user=user or current_interactive_user(),
+        description=("SafeHouse microphone guard - keeps EVERY active capture endpoint "
+                     "muted and at 0%, re-muting within about a second when one is "
+                     "switched back on."),
+        start=True, xml_template=USER_LOOP_TASK_XML,
+    )
+
+
 def open_panel_firewall(port: int = PANEL_PORT) -> str:
     """Allow inbound TCP to the panel from the local subnet only.
 
@@ -754,6 +779,11 @@ def main(argv: list[str] | None = None) -> int:
         "enabled": True,
         "max_percent": 60,
     }))
+    # No dial and no allow list: the parent asked for every microphone, always, and
+    # accepted that voice chat stops working. `enabled: false` is the only way down.
+    print("    " + seed_json(args.root / "mic-guard.json", {
+        "enabled": True,
+    }))
 
     print("[*] Rendering config.json from .env...")
     cfg, warnings = configmod.render(args.root / "config.json", pkg_dir / ".env")
@@ -806,6 +836,10 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"[*] Registering scheduled task {VOLUME_TASK}...")
     if not register_volume_guard(python=args.python, workdir=pkg_dir):
+        return 1
+
+    print(f"[*] Registering scheduled task {MIC_TASK}...")
+    if not register_mic_guard(python=args.python, workdir=pkg_dir):
         return 1
 
     if not args.no_resolver:
