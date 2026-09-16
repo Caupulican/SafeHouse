@@ -23,7 +23,7 @@ and a teleport between maps keeps the same process and writes a fresh join line 
 DIFFERENT place. Two of the fourteen games in this machine's own history do exactly that:
 
     universe 4807308814  "Story Game A"  places 13864661000, 13864667823
-    universe 2955322961  "Obby Game B"         places 7606564092, 88604154038333
+    universe 2955322961  "Obby Game B"   places 7606564092, 88604154038333
 
 A place-keyed allowlist would have let the child into the lobby and killed him in the
 level. Universe-keyed, both are one entry. The universeid comes straight out of the log,
@@ -123,8 +123,8 @@ MODES = (MODE_ALLOW, MODE_DENY)
 #   * SEVEN of the fifteen games played were rated `mild`, above the account's documented
 #     "Minimal" setting, and they launched anyway. The account-side filter was not
 #     enforcing. A label is evidence, not a control.
-#   * "Horror Game F" - the horror one - is rated `minimal`. So a
-#     maturity ceiling would not have caught the single game the parent named first.
+#   * "Horror Game F" - the horror one - is rated `minimal`. So a maturity ceiling
+#     would not have caught the single game the parent named first.
 #
 # Hence: a floor worth showing, never a filter worth trusting.
 MATURITY_ORDER = ("minimal", "mild", "moderate", "restricted")
@@ -1040,8 +1040,8 @@ def build_parser() -> argparse.ArgumentParser:
 def readable_console() -> None:
     """Stop a game's name from taking the report down.
 
-    Roblox experience names are full of emoji - `Builder Game K 💀`, `Build a Stone
-    Miner! ⚒️` - and a Windows console on this pt-BR box encodes cp1252, which has no
+    Roblox experience names are full of emoji - `Builder Game K 💀`, `Mining Game Q
+    ⚒️` - and a Windows console on this pt-BR box encodes cp1252, which has no
     code point for any of them. `--history` printed four rows and then died on a skull.
     Found only on the machine itself: every test runs on a UTF-8 stdout, so nothing here
     could have caught it.

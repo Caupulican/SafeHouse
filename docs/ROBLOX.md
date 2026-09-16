@@ -15,7 +15,7 @@ them: chat and content maturity are decided server-side per account.
 
 | Setting | Policy | Why |
 |---|---|---|
-| Linked parent account + settings PIN | **Required** | child has local admin on the PC by choice; the PIN is what stops settings drifting back |
+| Linked parent account + settings PIN | **Required** | The child has local admin on the PC by choice; the PIN is what stops settings drifting back |
 | Account birthdate | **Real age (9 as of 2026-08-30)** | Drives ad removal (Roblox does not serve ads to under-13s), chat defaults, content defaults. Still under 13, so nothing about this changed when he turned 9 — but the birthdate on the account must be the real one, not a stale one. |
 | Content maturity | **Mild** — raised from Minimal on 2026-08-30, the parent's call at age 9 | Filters moderate/restricted experiences from discovery and join. See Layer 4: this setting was measured **not enforcing** on this account. |
 | Chat | **Fully off** — no platform chat, no in-experience chat | The single highest-risk feature for this age; the games all remain playable |
@@ -25,7 +25,7 @@ them: chat and content maturity are decided server-side per account.
 | Daily screen time (Roblox-native) | **Lowest value Roblox offers** | The standing allowance is 0 min/day (see Layer 3) and Roblox's own control cannot express zero; set it as low as it goes so the account-side lane still helps on devices this repo does not manage |
 
 **Verify:** log into the parent account view and confirm each setting; then, from
-child's session, open a busy experience and confirm the chat window does not exist,
+the child's session, open a busy experience and confirm the chat window does not exist,
 and try to send a friend request message. Re-check after any Roblox client update.
 
 ## Layer 2 — network (AdGuard Home user rules)
@@ -116,8 +116,8 @@ timestamp must not move, however many times the task fires.
 **Before arming, add the AV exclusion.** Avast quarantined the earlier watcher on this
 machine — script and scheduled task both — and enforcement then dies silently. The
 installer adds a Microsoft Defender exclusion; third-party AV needs its own, added by
-hand in that product. And note the standing honesty of this setup: child has local admin
-by choice, so he *can* stop the task. The point of these lanes is that doing so is a
+hand in that product. And note the standing honesty of this setup: the child has local
+admin by choice, so he *can* stop the task. The point of these lanes is that doing so is a
 visible, deliberate act, not that it is impossible.
 
 ## Layer 3a — granting time, and taking it back
@@ -331,15 +331,15 @@ days of his own history, 359 minutes over 17 games:
 | Party minigame | 15 | 4% |
 | **Genuine construction sandbox** | **0** | **0%** |
 
-That last row is the point of the list. Sandbox Game M, Sandbox Game N, Build A
-Plane and Tycoon Game P are all on it and none has been opened yet; the shallow
+That last row is the point of the list. Sandbox Game M, Sandbox Game N, Sandbox Game O
+and Tycoon Game P are all on it and none has been opened yet; the shallow
 versions he already likes were **kept, not removed**, because a list that deletes a
 child's favourites gets argued with and a list that quietly grows better neighbours does
 not. The daily budget in Layer 3 is what limits *how much*.
 
-Beware the genre tag when curating: `Simulation/Sandbox` covers both Sandbox Game M (a real
-physics sandbox) and "Mining Game I" / "Mining Game Q" (dig-and-upgrade
-loops). Read the description, not the label.
+Beware the genre tag when curating: `Simulation/Sandbox` covers both Sandbox Game M (a
+real physics sandbox) and "Mining Game I" / "Mining Game Q" (dig-and-upgrade loops).
+Read the description, not the label.
 
 ### Honest limits
 

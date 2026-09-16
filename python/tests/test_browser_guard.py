@@ -451,7 +451,7 @@ def test_one_users_browser_is_found_among_several_owners():
 
 def test_an_unqualified_owner_name_still_matches():
     runner = tasklist(csv_row("chrome.exe", user="child"))
-    assert running_browsers(runner, users=("DESKTOP-ABC\\child",)) == ["chrome.exe"]
+    assert running_browsers(runner, users=("DESKTOP-ABC\\Child",)) == ["chrome.exe"]
 
 
 def test_a_hidden_window_title_does_not_hide_the_owner():

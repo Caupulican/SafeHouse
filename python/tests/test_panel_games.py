@@ -28,7 +28,7 @@ from safehouse_panel.i18n import render
 from safehouse_ytbudget import roblox_games
 
 NOW = int(datetime(2026, 8, 30, 13, 30).timestamp())
-BEACH, BREAKIN = 9681996188, 4807308814
+TYCOON_G, STORY_A = 9681996188, 4807308814
 
 
 def read(path: Path) -> dict:
@@ -43,9 +43,9 @@ def seed(root: Path, config: dict | None = None, seen: dict | None = None) -> No
 
 
 LEDGER = {
-    str(BEACH): {"places": [88083000467860], "joins": 3, "first": "2026-08-30T15:33:40",
+    str(TYCOON_G): {"places": [88083000467860], "joins": 3, "first": "2026-08-30T15:33:40",
                  "last": "2026-08-30T15:33:40", "name": "Tycoon Game G"},
-    str(BREAKIN): {"places": [13864661000, 13864667823], "joins": 2,
+    str(STORY_A): {"places": [13864661000, 13864667823], "joins": 2,
                    "first": "2026-08-30T16:04:31", "last": "2026-08-30T16:15:46",
                    "name": "Story Game A"},
     "place:7606564092": {"places": [7606564092], "joins": 1,
@@ -79,9 +79,9 @@ def test_the_mode_is_written_and_reported_with_what_it_was(tmp_path):
 
 def test_writing_the_mode_keeps_the_list(tmp_path):
     """Read-modify-write: a mode switch must not silently empty the allow list."""
-    seed(tmp_path, {"enabled": True, "mode": "allow", "universes": [BEACH]})
+    seed(tmp_path, {"enabled": True, "mode": "allow", "universes": [TYCOON_G]})
     controls.set_games_mode(tmp_path, "deny", now=NOW)
-    assert read(tmp_path / controls.GAMES_CONFIG)["universes"] == [BEACH]
+    assert read(tmp_path / controls.GAMES_CONFIG)["universes"] == [TYCOON_G]
 
 
 # --- the list ----------------------------------------------------------------
@@ -94,7 +94,7 @@ def test_a_posted_id_that_is_not_an_id_is_refused(bad):
 
 def test_a_list_that_is_not_a_list_is_refused():
     with pytest.raises(controls.ControlError):
-        controls.coerce_universes({"id": BEACH})
+        controls.coerce_universes({"id": TYCOON_G})
 
 
 def test_an_oversized_list_is_refused_rather_than_truncated():
@@ -103,14 +103,14 @@ def test_an_oversized_list_is_refused_rather_than_truncated():
 
 
 def test_duplicates_collapse_and_the_list_is_sorted():
-    assert controls.coerce_universes([BEACH, BREAKIN, BEACH]) == sorted([BEACH, BREAKIN])
+    assert controls.coerce_universes([TYCOON_G, STORY_A, TYCOON_G]) == sorted([TYCOON_G, STORY_A])
 
 
 def test_names_come_from_the_ledger_not_from_the_browser(tmp_path):
     seed(tmp_path, {"enabled": True, "mode": "allow"}, LEDGER)
-    controls.set_games_list(tmp_path, [BEACH], now=NOW)
+    controls.set_games_list(tmp_path, [TYCOON_G], now=NOW)
     assert read(tmp_path / controls.GAMES_CONFIG)["universes"] == [
-        {"id": BEACH, "name": "Tycoon Game G"}]
+        {"id": TYCOON_G, "name": "Tycoon Game G"}]
 
 
 def test_a_game_the_ledger_has_never_seen_is_stored_without_a_name(tmp_path):
@@ -121,27 +121,27 @@ def test_a_game_the_ledger_has_never_seen_is_stored_without_a_name(tmp_path):
 
 
 def test_the_message_names_what_changed_in_both_directions(tmp_path):
-    seed(tmp_path, {"enabled": True, "mode": "allow", "universes": [BEACH]}, LEDGER)
-    outcome = controls.set_games_list(tmp_path, [BREAKIN], now=NOW)
+    seed(tmp_path, {"enabled": True, "mode": "allow", "universes": [TYCOON_G]}, LEDGER)
+    outcome = controls.set_games_list(tmp_path, [STORY_A], now=NOW)
     text = render(outcome.message)
-    assert f"Added: {BREAKIN}" in text and f"Removed: {BEACH}" in text
-    assert outcome.before == [BEACH] and outcome.after == [BREAKIN]
+    assert f"Added: {STORY_A}" in text and f"Removed: {TYCOON_G}" in text
+    assert outcome.before == [TYCOON_G] and outcome.after == [STORY_A]
 
 
 def test_the_written_list_is_read_back_by_the_guard_itself(tmp_path):
     """The panel and the guard must agree about the file; this is the round trip."""
     seed(tmp_path, {"enabled": True, "mode": "allow"}, LEDGER)
-    controls.set_games_list(tmp_path, [BEACH, BREAKIN], now=NOW)
+    controls.set_games_list(tmp_path, [TYCOON_G, STORY_A], now=NOW)
     policy, _, fault = roblox_games.load_policy(tmp_path / controls.GAMES_CONFIG, None)
     assert not fault
-    assert policy.universes == frozenset({BEACH, BREAKIN})
-    assert policy.name_of(BEACH) == "Tycoon Game G"
+    assert policy.universes == frozenset({TYCOON_G, STORY_A})
+    assert policy.name_of(TYCOON_G) == "Tycoon Game G"
 
 
 # --- which changes need the password again -----------------------------------
 
 def values(**over):
-    base = {"games_enabled": True, "games_mode": "allow", "games_list": [BEACH]}
+    base = {"games_enabled": True, "games_mode": "allow", "games_list": [TYCOON_G]}
     base.update(over)
     return base
 
@@ -159,14 +159,14 @@ def test_moving_from_an_allow_list_to_a_deny_list_asks():
 
 
 def test_allowing_one_more_game_asks_but_removing_one_does_not():
-    assert controls.requires_password("games_list", [BEACH, BREAKIN], values())
+    assert controls.requires_password("games_list", [TYCOON_G, STORY_A], values())
     assert not controls.requires_password("games_list", [], values())
 
 
 def test_under_a_deny_list_the_direction_is_reversed():
     current = values(games_mode="deny")
     assert controls.requires_password("games_list", [], current)          # un-banning
-    assert not controls.requires_password("games_list", [BEACH, BREAKIN], current)
+    assert not controls.requires_password("games_list", [TYCOON_G, STORY_A], current)
 
 
 def test_a_malformed_list_asks_rather_than_slipping_through():
@@ -206,7 +206,7 @@ def test_an_empty_allow_list_that_is_on_is_not_reported_as_enforcing(tmp_path,
 
 
 def test_a_filter_that_is_off_says_so_rather_than_implying_a_rule(tmp_path, monkeypatch):
-    seed(tmp_path, {"enabled": False, "mode": "allow", "universes": [BEACH]})
+    seed(tmp_path, {"enabled": False, "mode": "allow", "universes": [TYCOON_G]})
     lane, _ = lane_of(tmp_path, monkeypatch)
     assert lane["status"] == status.OFF
     assert "any experience may run" in render(lane["reason"])
@@ -220,7 +220,7 @@ def test_a_broken_config_reaches_the_card_as_a_fault(tmp_path, monkeypatch):
 
 
 def test_the_facts_count_the_list_and_the_ledger(tmp_path, monkeypatch):
-    seed(tmp_path, {"enabled": True, "mode": "allow", "universes": [BEACH]}, LEDGER)
+    seed(tmp_path, {"enabled": True, "mode": "allow", "universes": [TYCOON_G]}, LEDGER)
     lane, _ = lane_of(tmp_path, monkeypatch)
     facts = {render(f["label"]): render(f["value"]) for f in lane["facts"]}
     assert facts["Games on the list"] == "1"
@@ -231,12 +231,12 @@ def test_the_facts_count_the_list_and_the_ledger(tmp_path, monkeypatch):
 # --- the catalog the checkboxes are drawn from -------------------------------
 
 def test_the_catalog_is_newest_first_and_marks_what_is_listed(tmp_path, monkeypatch):
-    seed(tmp_path, {"enabled": True, "mode": "allow", "universes": [BEACH]}, LEDGER)
+    seed(tmp_path, {"enabled": True, "mode": "allow", "universes": [TYCOON_G]}, LEDGER)
     _, snap = lane_of(tmp_path, monkeypatch)
     rows = snap["games"]["catalog"]
     assert [r["last"] for r in rows] == sorted((r["last"] for r in rows), reverse=True)
-    assert {r["id"]: r["listed"] for r in rows if r["id"]} == {BEACH: True,
-                                                               BREAKIN: False}
+    assert {r["id"]: r["listed"] for r in rows if r["id"]} == {TYCOON_G: True,
+                                                               STORY_A: False}
 
 
 def test_a_join_with_no_universe_is_shown_but_cannot_be_ticked(tmp_path, monkeypatch):
@@ -267,13 +267,13 @@ def test_the_page_carries_the_card_and_its_wiring():
 
 def test_the_rating_rides_in_the_catalog_row(tmp_path, monkeypatch):
     ledger = {k: dict(v) for k, v in LEDGER.items()}
-    ledger[str(BEACH)]["maturity"] = "minimal"
-    ledger[str(BREAKIN)]["maturity"] = "mild"
+    ledger[str(TYCOON_G)]["maturity"] = "minimal"
+    ledger[str(STORY_A)]["maturity"] = "mild"
     seed(tmp_path, {"enabled": True, "mode": "allow", "universes": []}, ledger)
     _, snap = lane_of(tmp_path, monkeypatch)
     rows = {r["id"]: r for r in snap["games"]["catalog"] if r["id"]}
-    assert (rows[BEACH]["maturity"], rows[BEACH]["over"]) == ("minimal", False)
-    assert (rows[BREAKIN]["maturity"], rows[BREAKIN]["over"]) == ("mild", True)
+    assert (rows[TYCOON_G]["maturity"], rows[TYCOON_G]["over"]) == ("minimal", False)
+    assert (rows[STORY_A]["maturity"], rows[STORY_A]["over"]) == ("mild", True)
     assert snap["games"]["ceiling"] == "minimal"
 
 
@@ -286,8 +286,8 @@ def test_a_game_with_no_rating_is_marked_over_the_ceiling(tmp_path, monkeypatch)
 def test_a_listed_game_above_the_ceiling_is_noted_on_the_card(tmp_path, monkeypatch):
     """It still runs - the list wins - but the parent is told, every poll."""
     ledger = {k: dict(v) for k, v in LEDGER.items()}
-    ledger[str(BREAKIN)]["maturity"] = "mild"
-    seed(tmp_path, {"enabled": True, "mode": "allow", "universes": [BREAKIN]}, ledger)
+    ledger[str(STORY_A)]["maturity"] = "mild"
+    seed(tmp_path, {"enabled": True, "mode": "allow", "universes": [STORY_A]}, ledger)
     lane, _ = lane_of(tmp_path, monkeypatch)
     assert any("rated mild" in render(n) and "on the list" in render(n)
                for n in lane["notes"])

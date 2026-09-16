@@ -236,7 +236,7 @@ schtasks /Query /TN SafeHouse-BrowserGuard /V /FO LIST
   file's timestamp may move, however many times the tasks fire. A log line per minute is a
   regression, not cosmetics.
 
-**Honest limits.** child has local admin by choice, so he can stop or delete either task.
+**Honest limits.** The child has local admin by choice, so he can stop or delete either task.
 These lanes make that a visible, deliberate act; they do not make it impossible. Also, a
 kill is image-wide: if a parent is browsing in the same browser in their own session at
 that moment, their window goes too — set `users` if that matters.
@@ -264,7 +264,9 @@ C:\SafeHouse\python\python.exe .\install.py --panel-only
 C:\SafeHouse\python\python.exe -m safehouse_panel set-password --generate
 ```
 
-Then open `http://192.168.1.50:8787` from a phone or laptop on the house network.
+Then open the panel host's own LAN address — `http://192.168.1.50:8787` is only the
+example here, use whatever address that machine has — from a phone or laptop on the
+house network.
 
 - **Binds the primary LAN address plus loopback, never `0.0.0.0`** — the box also has two
   VMware host-only adapters and the WSL adapter, and publishing a control surface for every

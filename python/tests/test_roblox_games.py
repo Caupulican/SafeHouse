@@ -61,8 +61,8 @@ TELEPORT_FULL = ("2026-08-30T16:04:59.096Z,1925.096802,1028,6 [FLog::GameJoinLoa
                  "Report game_join_loadtime: placeid:13864667823, join_time:0.5, "
                  "universeid:4807308814, referral_page:, ")
 
-BEACH = 9681996188
-BREAKIN = 4807308814
+TYCOON_G = 9681996188
+STORY_A = 4807308814
 
 
 # --- line parsing ------------------------------------------------------------
@@ -76,7 +76,7 @@ def test_plain_join_yields_the_place_but_no_universe():
 def test_loadtime_join_yields_both_ids():
     kind, found = parse_line(JOIN_FULL)
     assert kind == "join"
-    assert (found.place, found.universe) == (88083000467860, BEACH)
+    assert (found.place, found.universe) == (88083000467860, TYCOON_G)
 
 
 def test_leave_is_recognised():
@@ -99,12 +99,12 @@ def test_disconnect_alone_is_not_a_leave():
 
 def test_the_two_lines_of_one_join_are_one_presence():
     presence = reduce_presence([JOIN_PLAIN, JOIN_FULL], None)
-    assert presence == Presence(88083000467860, BEACH, "2026-08-30T15:33:40")
+    assert presence == Presence(88083000467860, TYCOON_G, "2026-08-30T15:33:40")
 
 
 def test_the_plain_line_does_not_erase_a_known_universe():
     """Whichever order they arrive in, the richer view must survive."""
-    assert reduce_presence([JOIN_FULL, JOIN_PLAIN], None).universe == BEACH
+    assert reduce_presence([JOIN_FULL, JOIN_PLAIN], None).universe == TYCOON_G
 
 
 def test_leave_clears_the_presence():
@@ -114,7 +114,7 @@ def test_leave_clears_the_presence():
 def test_teleport_keeps_the_universe_and_changes_the_place():
     presence = reduce_presence(
         [JOIN_PLAIN, JOIN_FULL, TELEPORT_PLAIN, TELEPORT_FULL], None)
-    assert (presence.place, presence.universe) == (13864667823, BREAKIN)
+    assert (presence.place, presence.universe) == (13864667823, STORY_A)
 
 
 def test_presence_carries_across_ticks():
@@ -214,23 +214,23 @@ def test_log_dirs_on_a_machine_without_the_folder():
 # --- the config --------------------------------------------------------------
 
 def test_a_plain_list_of_ids_is_accepted():
-    policy, warnings = parse_policy({"enabled": True, "universes": [BEACH, BREAKIN]})
-    assert policy.universes == frozenset({BEACH, BREAKIN})
+    policy, warnings = parse_policy({"enabled": True, "universes": [TYCOON_G, STORY_A]})
+    assert policy.universes == frozenset({TYCOON_G, STORY_A})
     assert warnings == []
 
 
 def test_objects_carry_names_for_the_panel():
     policy, _ = parse_policy(
-        {"enabled": True, "universes": [{"id": BEACH, "name": "Tycoon Game G"}]})
-    assert policy.name_of(BEACH) == "Tycoon Game G"
-    assert policy.name_of(BREAKIN) == f"universe {BREAKIN}"
+        {"enabled": True, "universes": [{"id": TYCOON_G, "name": "Tycoon Game G"}]})
+    assert policy.name_of(TYCOON_G) == "Tycoon Game G"
+    assert policy.name_of(STORY_A) == f"universe {STORY_A}"
 
 
 @pytest.mark.parametrize("bad", [True, "9681996188", 0, -1, None, 1.5])
 def test_a_non_id_is_dropped_with_a_warning(bad):
     """`true` is the one that matters: bool is an int subclass in Python."""
-    policy, warnings = parse_policy({"enabled": True, "universes": [bad, BEACH]})
-    assert policy.universes == frozenset({BEACH})
+    policy, warnings = parse_policy({"enabled": True, "universes": [bad, TYCOON_G]})
+    assert policy.universes == frozenset({TYCOON_G})
     assert any("id must be" in w for w in warnings)
 
 
@@ -256,7 +256,7 @@ def test_a_disabled_empty_list_is_not_worth_a_warning():
 
 
 def test_universes_of_the_wrong_shape_is_survivable():
-    policy, warnings = parse_policy({"enabled": True, "universes": {"id": BEACH}})
+    policy, warnings = parse_policy({"enabled": True, "universes": {"id": TYCOON_G}})
     assert policy.universes == frozenset()
     assert any("must be a list" in w for w in warnings)
 
@@ -274,7 +274,7 @@ def test_a_missing_config_leaves_the_lane_asleep(tmp_path):
 def test_a_broken_config_holds_the_last_good_one_and_reports_a_fault(tmp_path):
     path = tmp_path / "roblox-games.json"
     path.write_text('{"enabled": true, "universes": [9681996188]')  # truncated
-    good = GamePolicy(enabled=True, mode=MODE_ALLOW, universes=frozenset({BEACH}))
+    good = GamePolicy(enabled=True, mode=MODE_ALLOW, universes=frozenset({TYCOON_G}))
     policy, warnings, fault = load_policy(path, good)
     assert policy is good
     assert fault and any("holding the last good policy" in w for w in warnings)
@@ -297,22 +297,22 @@ def test_a_json_array_is_not_a_config(tmp_path):
 def test_a_bom_written_by_powershell_still_parses(tmp_path):
     path = tmp_path / "roblox-games.json"
     path.write_bytes(b"\xef\xbb\xbf" + json.dumps(
-        {"enabled": True, "universes": [BEACH]}).encode())
+        {"enabled": True, "universes": [TYCOON_G]}).encode())
     policy, _, fault = load_policy(path, None)
-    assert policy.universes == frozenset({BEACH}) and not fault
+    assert policy.universes == frozenset({TYCOON_G}) and not fault
 
 
 # --- the verdict -------------------------------------------------------------
 
-ALLOWLIST = GamePolicy(enabled=True, mode=MODE_ALLOW, universes=frozenset({BEACH}))
-DENYLIST = GamePolicy(enabled=True, mode=MODE_DENY, universes=frozenset({BEACH}))
-IN_BEACH = Presence(88083000467860, BEACH)
-IN_BREAKIN = Presence(13864661000, BREAKIN)
+ALLOWLIST = GamePolicy(enabled=True, mode=MODE_ALLOW, universes=frozenset({TYCOON_G}))
+DENYLIST = GamePolicy(enabled=True, mode=MODE_DENY, universes=frozenset({TYCOON_G}))
+IN_TYCOON_G = Presence(88083000467860, TYCOON_G)
+IN_STORY_A = Presence(13864661000, STORY_A)
 IN_UNKNOWN = Presence(88083000467860, None)
 
 
 def test_a_disabled_lane_decides_nothing():
-    assert verdict(IN_BREAKIN, GamePolicy(enabled=False))[0] == "idle"
+    assert verdict(IN_STORY_A, GamePolicy(enabled=False))[0] == "idle"
 
 
 def test_not_being_in_a_game_is_idle():
@@ -320,11 +320,11 @@ def test_not_being_in_a_game_is_idle():
 
 
 def test_a_listed_game_is_allowed():
-    assert verdict(IN_BEACH, ALLOWLIST)[0] == "allow"
+    assert verdict(IN_TYCOON_G, ALLOWLIST)[0] == "allow"
 
 
 def test_an_unlisted_game_is_killed():
-    decision, reason = verdict(IN_BREAKIN, ALLOWLIST)
+    decision, reason = verdict(IN_STORY_A, ALLOWLIST)
     assert decision == "kill" and "not on the allow list" in reason
 
 
@@ -335,11 +335,11 @@ def test_an_unreadable_universe_is_killed_under_an_allow_list():
 
 
 def test_a_denied_game_is_killed():
-    assert verdict(IN_BEACH, DENYLIST)[0] == "kill"
+    assert verdict(IN_TYCOON_G, DENYLIST)[0] == "kill"
 
 
 def test_an_unlisted_game_is_allowed_under_a_deny_list():
-    assert verdict(IN_BREAKIN, DENYLIST)[0] == "allow"
+    assert verdict(IN_STORY_A, DENYLIST)[0] == "allow"
 
 
 def test_an_unreadable_universe_is_spared_under_a_deny_list():
@@ -350,14 +350,14 @@ def test_an_unreadable_universe_is_spared_under_a_deny_list():
 
 def test_a_sibling_place_of_a_listed_game_is_allowed():
     """The empirical case this whole lane is keyed on: Story Game A's two places."""
-    policy = GamePolicy(enabled=True, mode=MODE_ALLOW, universes=frozenset({BREAKIN}))
-    assert verdict(Presence(13864667823, BREAKIN), policy)[0] == "allow"
+    policy = GamePolicy(enabled=True, mode=MODE_ALLOW, universes=frozenset({STORY_A}))
+    assert verdict(Presence(13864667823, STORY_A), policy)[0] == "allow"
 
 
 def test_a_place_id_is_never_mistaken_for_a_universe_id():
     policy = GamePolicy(enabled=True, mode=MODE_ALLOW,
                         universes=frozenset({13864661000}))  # a PLACE id, by mistake
-    assert verdict(IN_BREAKIN, policy)[0] == "kill"
+    assert verdict(IN_STORY_A, policy)[0] == "kill"
 
 
 # --- history -----------------------------------------------------------------
@@ -367,7 +367,7 @@ def test_history_pairs_each_join_with_its_leave(tmp_path):
         "\n".join([JOIN_PLAIN, JOIN_FULL, NOISE, LEAVE]) + "\n")
     sessions = scan_history([tmp_path])
     assert len(sessions) == 1
-    assert sessions[0].universe == BEACH
+    assert sessions[0].universe == TYCOON_G
     assert sessions[0].start == "2026-08-30T15:33:40"
     assert sessions[0].end == "2026-08-30T15:46:32"
 
@@ -392,28 +392,28 @@ def test_minutes_of_a_session_with_no_stamps_is_zero():
 
 def test_names_come_from_the_cache_without_touching_the_network(tmp_path):
     cache = tmp_path / "roblox-games.cache.json"
-    cache.write_text(json.dumps({str(BEACH): "Tycoon Game G"}))
+    cache.write_text(json.dumps({str(TYCOON_G): "Tycoon Game G"}))
 
     def forbidden(*_args, **_kw):
         raise AssertionError("the enforcing path must never reach the network")
 
-    names, problem = rg.fetch_names([BEACH], cache, opener=forbidden)
-    assert names[BEACH] == "Tycoon Game G" and problem is None
+    names, problem = rg.fetch_names([TYCOON_G], cache, opener=forbidden)
+    assert names[TYCOON_G] == "Tycoon Game G" and problem is None
 
 
 def test_an_unreachable_api_degrades_to_ids(tmp_path):
     def broken(*_args, **_kw):
         raise OSError("DNS")
 
-    names, problem = rg.fetch_names([BEACH], tmp_path / "cache.json", opener=broken)
+    names, problem = rg.fetch_names([TYCOON_G], tmp_path / "cache.json", opener=broken)
     assert names == {} and "could not reach" in problem
 
 
 # --- the ledger --------------------------------------------------------------
 
 def test_a_join_is_recorded_under_its_universe():
-    seen = rg.record_seen({}, IN_BEACH, "2026-08-30T15:33:40", "Tycoon Game G")
-    assert seen[str(BEACH)] == {
+    seen = rg.record_seen({}, IN_TYCOON_G, "2026-08-30T15:33:40", "Tycoon Game G")
+    assert seen[str(TYCOON_G)] == {
         "places": [88083000467860], "joins": 1,
         "first": "2026-08-30T15:33:40", "last": "2026-08-30T15:33:40",
         "name": "Tycoon Game G",
@@ -421,9 +421,9 @@ def test_a_join_is_recorded_under_its_universe():
 
 
 def test_a_second_join_accumulates_rather_than_replaces():
-    seen = rg.record_seen({}, Presence(13864661000, BREAKIN), "2026-08-30T13:04:31")
-    seen = rg.record_seen(seen, Presence(13864667823, BREAKIN), "2026-08-30T13:04:59")
-    entry = seen[str(BREAKIN)]
+    seen = rg.record_seen({}, Presence(13864661000, STORY_A), "2026-08-30T13:04:31")
+    seen = rg.record_seen(seen, Presence(13864667823, STORY_A), "2026-08-30T13:04:59")
+    entry = seen[str(STORY_A)]
     assert entry["joins"] == 2
     assert entry["places"] == [13864667823, 13864661000] or entry["places"] == sorted(
         [13864661000, 13864667823])
@@ -438,9 +438,9 @@ def test_a_game_with_no_universe_is_kept_visible_not_dropped():
 
 
 def test_a_known_name_is_not_lost_to_a_later_nameless_join():
-    seen = rg.record_seen({}, IN_BEACH, "2026-08-30T15:33:40", "Tycoon Game G")
-    seen = rg.record_seen(seen, IN_BEACH, "2026-08-30T16:00:00", "")
-    assert seen[str(BEACH)]["name"] == "Tycoon Game G"
+    seen = rg.record_seen({}, IN_TYCOON_G, "2026-08-30T15:33:40", "Tycoon Game G")
+    seen = rg.record_seen(seen, IN_TYCOON_G, "2026-08-30T16:00:00", "")
+    assert seen[str(TYCOON_G)]["name"] == "Tycoon Game G"
 
 
 def test_the_ledger_is_capped_by_dropping_the_stalest():
@@ -454,24 +454,24 @@ def test_the_ledger_is_capped_by_dropping_the_stalest():
 
 def test_rescanning_the_same_logs_does_not_double_the_joins():
     """`--history` reads the same files every run; running it twice must not lie."""
-    scanned = rg.record_seen({}, IN_BEACH, "2026-08-30T15:33:40", "Beach")
+    scanned = rg.record_seen({}, IN_TYCOON_G, "2026-08-30T15:33:40", "Tycoon G")
     once = rg.merge_ledgers({}, scanned)
     twice = rg.merge_ledgers(once, scanned)
     assert twice == once
-    assert twice[str(BEACH)]["joins"] == 1
+    assert twice[str(TYCOON_G)]["joins"] == 1
 
 
 def test_merging_keeps_the_earliest_first_and_the_latest_last():
-    old = {str(BEACH): {"places": [1], "joins": 5, "first": "2026-08-01T00:00:00",
-                        "last": "2026-08-02T00:00:00", "name": "Beach"}}
-    new = {str(BEACH): {"places": [2], "joins": 2, "first": "2026-08-30T00:00:00",
+    old = {str(TYCOON_G): {"places": [1], "joins": 5, "first": "2026-08-01T00:00:00",
+                        "last": "2026-08-02T00:00:00", "name": "Tycoon G"}}
+    new = {str(TYCOON_G): {"places": [2], "joins": 2, "first": "2026-08-30T00:00:00",
                         "last": "2026-08-31T00:00:00", "name": ""}}
-    merged = rg.merge_ledgers(old, new)[str(BEACH)]
+    merged = rg.merge_ledgers(old, new)[str(TYCOON_G)]
     assert merged["first"] == "2026-08-01T00:00:00"
     assert merged["last"] == "2026-08-31T00:00:00"
     assert merged["joins"] == 5
     assert merged["places"] == [1, 2]
-    assert merged["name"] == "Beach"
+    assert merged["name"] == "Tycoon G"
 
 
 def test_a_corrupt_ledger_costs_checkboxes_not_enforcement(tmp_path):
@@ -529,14 +529,14 @@ def drive(machine, ticks=1):
 
 
 def test_an_allowed_game_is_left_alone(machine):
-    machine.policy(universes=[BEACH])
+    machine.policy(universes=[TYCOON_G])
     machine.write(JOIN_PLAIN, JOIN_FULL)
     drive(machine, 2)
     assert machine.killed == []
 
 
 def test_an_unlisted_game_is_ended(machine):
-    machine.policy(universes=[BREAKIN])
+    machine.policy(universes=[STORY_A])
     machine.write(JOIN_PLAIN, JOIN_FULL)
     drive(machine, 2)
     assert machine.killed == [["RobloxPlayerBeta.exe"]]
@@ -551,7 +551,7 @@ def test_the_same_join_is_not_killed_twice(machine):
 
 
 def test_a_teleport_into_a_banned_game_is_caught_mid_session(machine):
-    machine.policy(universes=[BEACH])
+    machine.policy(universes=[TYCOON_G])
     machine.write(JOIN_PLAIN, JOIN_FULL)
     drive(machine, 2)
     assert machine.killed == []
@@ -593,20 +593,20 @@ def test_a_game_closed_during_the_pause_is_not_logged_as_a_kill(machine):
 
 def test_an_idle_machine_writes_nothing_at_all(machine):
     """The parent's condition on every lane here: no news, no files, no log lines."""
-    machine.policy(universes=[BEACH])
+    machine.policy(universes=[TYCOON_G])
     drive(machine, 5)
     assert sorted(p.name for p in machine.root.iterdir()) == ["roblox-games.json"]
 
 
 def test_a_played_game_reaches_the_ledger(machine):
-    machine.policy(universes=[BEACH, BREAKIN])
+    machine.policy(universes=[TYCOON_G, STORY_A])
     machine.write(JOIN_PLAIN, JOIN_FULL)
     drive(machine, 2)
-    machine.write(TELEPORT_PLAIN, TELEPORT_FULL)   # ends the Beach session
+    machine.write(TELEPORT_PLAIN, TELEPORT_FULL)   # ends the Tycoon G session
     drive(machine, 2)
     ledger = rg.load_seen(machine.root / "roblox-games.seen.json")
-    assert ledger[str(BEACH)]["joins"] == 1
-    assert ledger[str(BEACH)]["first"] == "2026-08-30T15:33:40"
+    assert ledger[str(TYCOON_G)]["joins"] == 1
+    assert ledger[str(TYCOON_G)]["first"] == "2026-08-30T15:33:40"
 
 
 def test_a_game_that_was_ended_is_still_recorded(machine):
@@ -614,7 +614,7 @@ def test_a_game_that_was_ended_is_still_recorded(machine):
     machine.policy(universes=[])
     machine.write(JOIN_PLAIN, JOIN_FULL)
     drive(machine, 2)
-    assert str(BEACH) in rg.load_seen(machine.root / "roblox-games.seen.json")
+    assert str(TYCOON_G) in rg.load_seen(machine.root / "roblox-games.seen.json")
 
 
 def test_a_restart_into_a_session_already_in_progress_still_decides(machine):
@@ -626,7 +626,7 @@ def test_a_restart_into_a_session_already_in_progress_still_decides(machine):
 
 
 def test_leaving_the_game_clears_the_verdict(machine):
-    machine.policy(universes=[BEACH])
+    machine.policy(universes=[TYCOON_G])
     machine.write(JOIN_PLAIN, JOIN_FULL, LEAVE)
     drive(machine, 2)
     assert machine.killed == []
@@ -636,8 +636,8 @@ def test_a_tick_that_swallows_a_whole_session_still_reports_it():
     """Three seconds of log can hold a leave and a re-join; neither may be lost."""
     final, ended = rg.fold_presence(
         [JOIN_PLAIN, JOIN_FULL, LEAVE, TELEPORT_PLAIN, TELEPORT_FULL], None)
-    assert final.universe == BREAKIN
-    assert [p.universe for p in ended] == [BEACH]
+    assert final.universe == STORY_A
+    assert [p.universe for p in ended] == [TYCOON_G]
 
 
 def test_a_hop_straight_from_one_game_to_another_ends_the_first():
@@ -683,9 +683,9 @@ def test_an_unknown_ceiling_falls_back_and_warns():
 
 def test_a_listed_game_above_the_ceiling_is_reported_not_vetoed():
     """The parent's list wins. The module's job is to say what is in it, every time."""
-    policy = GamePolicy(enabled=True, universes=frozenset({BEACH, BREAKIN}),
-                        names={BEACH: "Beach", BREAKIN: "Story Game A"})
-    seen = {str(BEACH): {"maturity": "minimal"}, str(BREAKIN): {"maturity": "mild"}}
+    policy = GamePolicy(enabled=True, universes=frozenset({TYCOON_G, STORY_A}),
+                        names={TYCOON_G: "Tycoon G", STORY_A: "Story Game A"})
+    seen = {str(TYCOON_G): {"maturity": "minimal"}, str(STORY_A): {"maturity": "mild"}}
     flags = rg.flag_ceiling(policy, seen)
     assert len(flags) == 1
     assert "Story Game A is rated mild" in flags[0]
@@ -693,26 +693,26 @@ def test_a_listed_game_above_the_ceiling_is_reported_not_vetoed():
 
 
 def test_a_listed_game_with_no_rating_is_reported_too():
-    policy = GamePolicy(enabled=True, universes=frozenset({BEACH}))
+    policy = GamePolicy(enabled=True, universes=frozenset({TYCOON_G}))
     assert "rated unknown" in rg.flag_ceiling(policy, {})[0]
 
 
 def test_ratings_only_land_on_games_the_ledger_knows():
-    seen = {str(BEACH): {"joins": 1}}
-    out = rg.apply_maturity(seen, {BEACH: "mild", 999: "restricted"})
-    assert out[str(BEACH)]["maturity"] == "mild"
+    seen = {str(TYCOON_G): {"joins": 1}}
+    out = rg.apply_maturity(seen, {TYCOON_G: "mild", 999: "restricted"})
+    assert out[str(TYCOON_G)]["maturity"] == "mild"
     assert "999" not in out
 
 
 def test_maturity_comes_from_the_cache_without_touching_the_network(tmp_path):
     cache = tmp_path / "roblox-games.maturity.json"
-    cache.write_text(json.dumps({str(BEACH): "mild"}))
+    cache.write_text(json.dumps({str(TYCOON_G): "mild"}))
 
     def forbidden(*_a, **_k):
         raise AssertionError("the enforcing path must never reach the network")
 
-    ratings, problem = rg.fetch_maturity({BEACH: "Beach"}, cache, opener=forbidden)
-    assert ratings == {BEACH: "mild"} and problem is None
+    ratings, problem = rg.fetch_maturity({TYCOON_G: "Tycoon G"}, cache, opener=forbidden)
+    assert ratings == {TYCOON_G: "mild"} and problem is None
 
 
 def _search_response(payload):
@@ -733,32 +733,32 @@ def test_a_search_hit_is_taken_only_when_the_universe_id_matches(tmp_path):
     """Two games can share a name; the id is the only thing that identifies one."""
     opener = _search_response({"searchResults": [{"contents": [
         {"universeId": 111, "contentMaturity": "restricted"},
-        {"universeId": BEACH, "contentMaturity": "minimal"},
+        {"universeId": TYCOON_G, "contentMaturity": "minimal"},
     ]}]})
-    ratings, _ = rg.fetch_maturity({BEACH: "Tycoon Game G"},
+    ratings, _ = rg.fetch_maturity({TYCOON_G: "Tycoon Game G"},
                                    tmp_path / "m.json", opener=opener,
                                    pause=lambda _s: None)
-    assert ratings == {BEACH: "minimal"}
+    assert ratings == {TYCOON_G: "minimal"}
 
 
 def test_a_name_that_finds_nothing_leaves_the_rating_unknown(tmp_path):
     opener = _search_response({"searchResults": []})
-    ratings, problem = rg.fetch_maturity({BEACH: "Beach"}, tmp_path / "m.json",
+    ratings, problem = rg.fetch_maturity({TYCOON_G: "Tycoon G"}, tmp_path / "m.json",
                                          opener=opener, pause=lambda _s: None)
     assert ratings == {} and problem is None
-    assert rg.above_ceiling(ratings.get(BEACH), "minimal") is True
+    assert rg.above_ceiling(ratings.get(TYCOON_G), "minimal") is True
 
 
 def test_an_unreachable_search_api_reports_and_keeps_what_it_had(tmp_path):
     cache = tmp_path / "m.json"
-    cache.write_text(json.dumps({str(BEACH): "minimal"}))
+    cache.write_text(json.dumps({str(TYCOON_G): "minimal"}))
 
     def broken(*_a, **_k):
         raise OSError("DNS")
 
-    ratings, problem = rg.fetch_maturity({BEACH: "Beach", BREAKIN: "Story Game A"}, cache,
+    ratings, problem = rg.fetch_maturity({TYCOON_G: "Tycoon G", STORY_A: "Story Game A"}, cache,
                                          opener=broken, pause=lambda _s: None)
-    assert ratings == {BEACH: "minimal"}
+    assert ratings == {TYCOON_G: "minimal"}
     assert "lookup failed" in problem
 
 
@@ -772,8 +772,8 @@ def test_a_curated_games_rating_is_found_in_the_cache_not_only_the_ledger():
 
 
 def test_the_ledger_wins_over_the_cache_when_both_know():
-    assert rg.maturity_for(BEACH, {str(BEACH): {"maturity": "mild"}},
-                           {str(BEACH): "minimal"}) == "mild"
+    assert rg.maturity_for(TYCOON_G, {str(TYCOON_G): {"maturity": "mild"}},
+                           {str(TYCOON_G): "minimal"}) == "mild"
 
 
 def test_the_console_is_made_utf8_so_an_emoji_name_cannot_kill_the_report():

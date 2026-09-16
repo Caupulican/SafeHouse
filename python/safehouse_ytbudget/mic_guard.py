@@ -4,10 +4,10 @@ The rule has no dial: a capture endpoint that is ACTIVE is muted and its level i
 always. Not the default microphone - EVERY one of them. A guard that minded only the
 default endpoint would be worth nothing here, because switching input is a two-click
 affair and this machine has at least two: the `Steam Streaming Microphone` (a virtual
-device that exists whether or not a headset is plugged in) and the Bluetooth
-`BT Headset Hands-Free` capture endpoint, which appears the moment the
-headset pairs. Voice chat stops working. That is the intended outcome, chosen by the
-parent, not a side effect to be apologised for.
+device that exists whether or not a headset is plugged in) and a Bluetooth hands-free
+capture endpoint (`BT Headset Hands-Free`), which appears the moment the headset
+pairs. Voice chat stops working. That is the intended outcome, chosen by the parent,
+not a side effect to be apologised for.
 
 Shape, and why it is resident rather than a one-shot like the kill lanes: the same
 argument that made the volume ceiling resident, only sharper. A task firing every minute

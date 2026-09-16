@@ -35,7 +35,7 @@ A full `install.py` run registers both; `--no-panel` / `--no-resolver` skip them
 | | |
 |---|---|
 | Task | `SafeHouse-Panel`, SYSTEM, hidden, `BootTrigger`, `ExecutionTimeLimit PT0S`, `RestartOnFailure` every minute |
-| Listens on | `127.0.0.1:8787` **and** the primary LAN address (`192.168.1.50:8787` today) |
+| Listens on | `127.0.0.1:8787` **and** the primary LAN address (`192.168.1.50:8787` in these examples — whatever the panel host's own address is) |
 | Firewall | `SafeHouse-Panel`, inbound TCP 8787, `remoteip=LocalSubnet`, private+domain profiles |
 | Reads/writes | `C:\ProgramData\SafeHouse\*.json`, `panel.log` |
 
@@ -118,7 +118,7 @@ The LAN address is **DHCP**. It is detected at every start from the interface ho
 default route, so a move is picked up on the next restart — but the bookmark on the
 parent's phone breaks, and that looks exactly like the panel being down.
 
-**Set a DHCP reservation on the router for `192.168.1.50`.** Alternatively pin it in
+**Set a DHCP reservation on the router for the panel host's own address** (`192.168.1.50` in the examples below). Alternatively pin it in
 `C:\ProgramData\SafeHouse\panel.json`:
 
 ```json
