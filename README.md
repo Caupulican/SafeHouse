@@ -251,6 +251,7 @@ SafeHouse/
     safehouse_setup dns             verified loopback DNS + DHCP-safe rollback
     safehouse_setup browser        closes Opera GX's VPN and DoH
     parental-blocks/        host lists for the on-demand blocks
+    playgames-cleanup/      assisted one-by-one uninstall of Play Games' Android games (disk space)
   python/                 Python port of the watcher — see docs/PYTHON-PORT.md
   ansible/                playbook + roles for the WSL side
   scripts/                deploy, DNS recovery, blocklist loading, auto-update

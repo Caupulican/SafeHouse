@@ -1,0 +1,5 @@
+# Runtime deps for THIS tool only, installed into its own .venv by
+# Run-PlayGamesCleanup.ps1. Never into python/ - that package is stdlib-only by policy.
+# pywinauto pulls comtypes and pywin32 on Windows.
+pywinauto==0.6.9
+pyautogui==0.9.54
